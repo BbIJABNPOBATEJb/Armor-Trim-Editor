@@ -512,7 +512,7 @@ const Assets = {
 // Project data
 // ============================================================================
 
-const DATA_VERSION = 2;
+const DATA_VERSION = 3;
 function defaultData() {
 	let prefs = Prefs.get();
 	return {
@@ -529,8 +529,12 @@ function defaultData() {
 		preview: {material: 'none', highlight: false},
 		skin: {source: 'default', id: 'steve', slim: false, name: ''},
 		pose: {id: 'default', speed: 1, paused: false, head_yaw: 0, head_pitch: 0},
+		mc_version: prefs.mc_version || DEFAULT_MC_VERSION,
 		export: {
+			pack_type: prefs.pack_type || 'zip',
 			pack_path: prefs.pack_path || '',
+			zip_dir: prefs.zip_dir || '',
+			zip_name: prefs.zip_name || 'armor_trims',
 			namespace: prefs.namespace || 'minecraft',
 			register_atlas: true,
 			sync_permutations: true,
@@ -541,7 +545,7 @@ function defaultData() {
 			backup: true,
 		},
 		icon_gen: {base: 'sentry', body: '#6a3fb0', accent: '#4bc9c9', glyph: 'recolor', contrast: 1},
-		datapack: {path: prefs.datapack_path || '', version: prefs.datapack_version || DEFAULT_DATAPACK_VERSION, decal: false, zip: true, names: ''},
+		datapack: {dir: prefs.datapack_dir || '', name: prefs.datapack_name || 'armor_trims', decal: false, names: ''},
 	};
 }
 function isTrimProject(project = Project) {
@@ -551,8 +555,12 @@ function D() {
 	if (!isTrimProject()) return null;
 	let data = Project.armor_trim_editor;
 	if (!data || !data.view || !(data.version >= DATA_VERSION)) {
+		data = data || {};
+		// Projects from before zip export wrote into a resource pack folder
+		if (data.export && data.export.pack_path && !data.export.pack_type) data.export.pack_type = 'folder';
+		if (data.datapack && data.datapack.version && !data.mc_version) data.mc_version = data.datapack.version;
 		// Fill settings added in newer versions without touching existing ones
-		Project.armor_trim_editor = deepDefaults(data || {}, defaultData());
+		Project.armor_trim_editor = deepDefaults(data, defaultData());
 		Project.armor_trim_editor.version = DATA_VERSION;
 	}
 	return Project.armor_trim_editor;
@@ -670,7 +678,7 @@ async function buildTrimProject(opts) {
 	let icon_cube = new Cube({
 		name: t('item_icon'),
 		trim_role: 'icon',
-		from: [-30, 10, 0], to: [-14, 26, 0],
+		from: [-42, 10, 0], to: [-26, 26, 0],
 		box_uv: false,
 		color: 2,
 	});
@@ -1046,6 +1054,8 @@ const POSES = [
 	{id: 'spyglass', icon: 'search', name: t('spyglass')},
 	{id: 'zombie', icon: 'front_hand', name: t('arms_forward')},
 	{id: 'tpose', icon: 'open_with', name: t('t_pose')},
+	{id: 'spread', icon: 'open_in_full', name: t('pose_spread')},
+	{id: 'tpose_spread', icon: 'zoom_out_map', name: t('pose_tpose_spread')},
 	{id: 'wave', icon: 'waving_hand', name: t('waving'), animated: true},
 	{id: 'swim', icon: 'pool', name: t('swimming'), animated: true},
 	{id: 'elytra', icon: 'flight', name: t('elytra')},
@@ -1079,6 +1089,8 @@ function computePose(pose_id, ticks, head_yaw, head_pitch) {
 
 	switch (pose_id) {
 		case 'default': s.bob = false; break;
+		case 'spread': s.bob = false; s.spread = true; break;
+		case 'tpose_spread': s.bob = false; s.spread = true; break;
 		case 'walk': s.walk_pos = ticks * 0.86; s.walk_speed = 0.86; break;
 		case 'run': s.walk_pos = ticks * 1.0; s.walk_speed = 1.0; break;
 		case 'sneak': s.crouch = true; break;
@@ -1131,6 +1143,7 @@ function computePose(pose_id, ticks, head_yaw, head_pitch) {
 			ra.xRot = -PI / 2; la.xRot = -PI / 2;
 			break;
 		case 'tpose':
+		case 'tpose_spread':
 			ra.zRot = PI / 2; la.zRot = -PI / 2; s.bob = false;
 			break;
 		case 'wave':
@@ -1157,6 +1170,14 @@ function computePose(pose_id, ticks, head_yaw, head_pitch) {
 		ra.xRot += 0.4; la.xRot += 0.4;
 		rl.z += 4; ll.z += 4;
 		head.y += 4.2; body.y += 3.2; la.y += 3.2; ra.y += 3.2;
+	}
+
+	if (s.spread) {
+		// Pull the parts apart so the armor of each one is seen on its own (like an exploded view)
+		head.y -= 4.5;
+		ra.x -= 4; la.x += 4;
+		rl.x -= 2; ll.x += 2;
+		rl.y += 4; ll.y += 4;
 	}
 
 	if (s.bob) {
@@ -1378,7 +1399,12 @@ function suggestColors() {
 	return {body: rgbToHex(...body), accent: rgbToHex(...acc)};
 }
 async function iconBaseCanvas(base) {
-	if (base.startsWith('file:')) return dataURLToCanvas(bufferToDataURL(getFS().readFileSync(base.substring(5))));
+	if (base.startsWith('pack:')) {
+		let data = D();
+		let pack = await packStorage(rpTargetPath(data.export)).load();
+		let url = await readPackPNG(pack, base.substring(5));
+		if (url) return dataURLToCanvas(url);
+	}
 	if (base == 'current') {
 		let tex = findTexture('icon');
 		if (tex && tex.canvas) {
@@ -1396,21 +1422,21 @@ async function iconBaseCanvas(base) {
 	}
 	return fallbackTemplateCanvas();
 }
-function packIconFiles(data) {
+async function packIconFiles(data) {
 	let list = [];
 	try {
-		let pack = data.export.pack_path;
-		if (!pack || !isDirectory(pack)) return list;
-		let id = parseResourceId(data.export.icon_texture.replace('{id}', '__ID__'));
-		let dir = PathModule.dirname(PathModule.join(pack, 'assets', id.ns, 'textures', id.path));
-		for (let file of readDir(dir)) {
-			if (file.endsWith('.png')) list.push({id: 'file:' + PathModule.join(dir, file), name: t('pack') + file.replace('.png', '')});
+		let target = rpTargetPath(data.export);
+		if (!target || !pathExists(target)) return list;
+		let pack = await packStorage(target).load();
+		let dir = PathModule.posix.dirname(iconRel(data.export.icon_texture, '__id__'));
+		for (let file of pack.listDir(dir)) {
+			if (file.endsWith('.png')) list.push({id: 'pack:' + dir + '/' + file, name: t('pack') + file.replace('.png', '')});
 		}
 	} catch (err) {}
 	return list;
 }
 
-function openIconGenerator() {
+async function openIconGenerator() {
 	let data = D();
 	if (!data) return;
 	let icon_texture = findTexture('icon');
@@ -1421,7 +1447,7 @@ function openIconGenerator() {
 		{id: 'simple', name: t('simple_tablet')},
 		...VANILLA_PATTERNS.map(p => ({id: p, name: t('template') + p})),
 		{id: 'netherite_upgrade', name: t('template_netherite_upgrade')},
-		...packIconFiles(data),
+		...await packIconFiles(data),
 	];
 	let dialog = new Dialog({
 		id: 'armor_trim_editor_icon_generator',
@@ -1651,32 +1677,173 @@ function confirmClearPiece(piece) {
 }
 
 // ============================================================================
+// Pack storage: a resource pack or datapack is either a folder or a zip archive
+// ============================================================================
+
+class FolderPack {
+	constructor(root) {
+		this.kind = 'folder';
+		this.root = root;
+		this.path = root;
+	}
+	async load() {
+		return this;
+	}
+	abs(rel) {
+		return PathModule.join(this.root, ...rel.split('/'));
+	}
+	exists(rel) {
+		return pathExists(this.abs(rel));
+	}
+	async read(rel) {
+		return this.exists(rel) ? getFS().readFileSync(this.abs(rel)) : null;
+	}
+	listDir(rel) {
+		return readDir(this.abs(rel));
+	}
+	write(rel, content, backup_stamp) {
+		let path = this.abs(rel);
+		if (backup_stamp) backupFile(path, this.root, backup_stamp);
+		ensureDir(PathModule.dirname(path));
+		getFS().writeFileSync(path, content);
+	}
+	async save() {}
+}
+
+class ZipPack {
+	constructor(file) {
+		this.kind = 'zip';
+		this.path = file;
+		this.zip = null;
+		this.existed = false;
+		this.dirty = false;
+	}
+	async load() {
+		let fs = getFS();
+		this.existed = fs.existsSync(this.path);
+		this.zip = this.existed ? await JSZip.loadAsync(fs.readFileSync(this.path)) : new JSZip();
+		return this;
+	}
+	exists(rel) {
+		return !!this.zip.file(rel);
+	}
+	async read(rel) {
+		let file = this.zip.file(rel);
+		return file ? Buffer.from(await file.async('uint8array')) : null;
+	}
+	listDir(rel) {
+		let prefix = rel.replace(/\/?$/, '/');
+		let names = new Set();
+		this.zip.forEach((path) => {
+			if (!path.startsWith(prefix)) return;
+			let name = path.substring(prefix.length).split('/')[0];
+			if (name) names.add(name);
+		});
+		return [...names];
+	}
+	write(rel, content) {
+		this.zip.file(rel, content);
+		this.dirty = true;
+	}
+	async save(backup_stamp) {
+		if (!this.dirty) return;
+		if (this.existed && backup_stamp) backupFile(this.path, PathModule.dirname(this.path), backup_stamp);
+		let content = await this.zip.generateAsync({type: 'uint8array', compression: 'DEFLATE'});
+		ensureDir(PathModule.dirname(this.path));
+		getFS().writeFileSync(this.path, Buffer.from(content));
+		this.existed = true;
+		this.dirty = false;
+	}
+}
+
+function packStorage(path) {
+	return /\.zip$/i.test(path) ? new ZipPack(path) : new FolderPack(path);
+}
+async function readPackText(pack, rel) {
+	let buffer = await pack.read(rel);
+	return buffer ? buffer.toString('utf-8').replace(/^﻿/, '') : null;
+}
+function writeJSON(pack, rel, json, previous_text, backup_stamp) {
+	// Keep the indentation and trailing newline of the file being replaced
+	let text = previous_text || '';
+	pack.write(rel, JSON.stringify(json, null, detectIndent(text)) + (text.endsWith('\n') || !text ? '\n' : ''), backup_stamp);
+}
+function zipFileName(name) {
+	name = String(name || '').trim().replace(/\.zip$/i, '');
+	return /^[^\\/:*?"<>|]+$/.test(name) ? name : '';
+}
+
+// ============================================================================
+// Minecraft versions
+// ============================================================================
+
+// Versions whose resource pack layout matches what the plugin exports (1.21.2+)
+const MC_VERSIONS = [
+	{id: '26.2', name: '26.2', rp: 88, dp: 107, new_meta: true},
+	{id: '26.1.2', name: '26.1.2', rp: 84, dp: 101, new_meta: true},
+	{id: '1.21.11', name: '1.21.11', rp: 75, dp: 94, new_meta: true},
+	{id: '1.21.9', name: '1.21.9 – 1.21.10', rp: 69, dp: 88, new_meta: true},
+	{id: '1.21.7', name: '1.21.7 – 1.21.8', rp: 64, dp: 81},
+	{id: '1.21.6', name: '1.21.6', rp: 63, dp: 80},
+	{id: '1.21.5', name: '1.21.5', rp: 55, dp: 71},
+	{id: '1.21.4', name: '1.21.4', rp: 46, dp: 61, template_item: true},
+	{id: '1.21.2', name: '1.21.2 – 1.21.3', rp: 42, dp: 57, template_item: true},
+];
+const DEFAULT_MC_VERSION = '1.21.11';
+
+function mcVersion(id) {
+	return MC_VERSIONS.find(v => v.id == id) || MC_VERSIONS.find(v => v.id == DEFAULT_MC_VERSION);
+}
+function versionOptions() {
+	let options = {};
+	for (let v of MC_VERSIONS) options[v.id] = v.name;
+	return options;
+}
+function mcmetaText(version, kind) {
+	let format = kind == 'rp' ? version.rp : version.dp;
+	let pack = {description: 'Armor trims'};
+	if (version.new_meta) {
+		pack.min_format = format;
+		pack.max_format = format;
+	} else {
+		pack.pack_format = format;
+	}
+	return JSON.stringify({pack}, null, '\t') + '\n';
+}
+function mcmetaFormat(json) {
+	let pack = json && json.pack || {};
+	let value = pack.max_format ?? pack.pack_format ?? pack.min_format;
+	return Array.isArray(value) ? value[0] : value;
+}
+
+// ============================================================================
 // Export to resource pack
 // ============================================================================
 
+function rpTargetPath(e) {
+	if (e.pack_type == 'folder') return e.pack_path || '';
+	let name = zipFileName(e.zip_name);
+	return e.zip_dir && name ? PathModule.join(e.zip_dir, name + '.zip') : '';
+}
 function exportPlan(data) {
-	let P = PathModule;
 	let e = data.export;
 	let id = data.trim_id;
 	let ns = e.namespace || 'minecraft';
-	let pack = e.pack_path;
-	let plan = {pack, id, ns, files: [], atlas: null};
-	plan.files.push({kind: 'texture', role: 'trim_humanoid', path: P.join(pack, 'assets', ns, 'textures', 'trims', 'entity', 'humanoid', id + '.png')});
-	plan.files.push({kind: 'texture', role: 'trim_leggings', path: P.join(pack, 'assets', ns, 'textures', 'trims', 'entity', 'humanoid_leggings', id + '.png')});
+	let plan = {target: rpTargetPath(e), type: e.pack_type, id, ns, files: [], atlas: null, version: mcVersion(data.mc_version)};
+	plan.files.push({kind: 'texture', role: 'trim_humanoid', rel: `assets/${ns}/textures/trims/entity/humanoid/${id}.png`});
+	plan.files.push({kind: 'texture', role: 'trim_leggings', rel: `assets/${ns}/textures/trims/entity/humanoid_leggings/${id}.png`});
 	if (e.icon) {
 		let tex_id = parseResourceId(e.icon_texture.replace(/\{id\}/g, id));
 		let model_id = parseResourceId(e.icon_model.replace(/\{id\}/g, id));
 		plan.icon_texture_id = tex_id.ns + ':' + tex_id.path;
 		plan.icon_model_id = model_id.ns + ':' + model_id.path;
-		plan.files.push({kind: 'texture', role: 'icon', path: P.join(pack, 'assets', tex_id.ns, 'textures', tex_id.path + '.png')});
-		plan.files.push({kind: 'model', path: P.join(pack, 'assets', model_id.ns, 'models', model_id.path + '.json'),
+		plan.files.push({kind: 'texture', role: 'icon', rel: `assets/${tex_id.ns}/textures/${tex_id.path}.png`});
+		plan.files.push({kind: 'model', rel: `assets/${model_id.ns}/models/${model_id.path}.json`,
 			content: JSON.stringify({parent: e.icon_parent || 'minecraft:item/generated', textures: {layer0: plan.icon_texture_id}}, null, 4)});
 	}
 	// Vanilla patterns are already listed in the vanilla atlas
 	plan.vanilla = ns == 'minecraft' && VANILLA_PATTERNS.includes(id);
-	if (e.register_atlas && !plan.vanilla) {
-		plan.atlas = P.join(pack, 'assets', 'minecraft', 'atlases', 'armor_trims.json');
-	}
+	if (e.register_atlas && !plan.vanilla) plan.atlas = 'assets/minecraft/atlases/armor_trims.json';
 	return plan;
 }
 function exportPlanErrors(data, plan) {
@@ -1684,8 +1851,14 @@ function exportPlanErrors(data, plan) {
 	let e = data.export;
 	let id_error = trimIdError(data.trim_id);
 	if (id_error) errors.push(id_error);
-	if (!e.pack_path) errors.push(t('no_resource_pack_folder_selected'));
-	else if (!isDirectory(e.pack_path)) errors.push(t('resource_pack_folder_not_found') + e.pack_path);
+	if (e.pack_type == 'folder') {
+		if (!e.pack_path) errors.push(t('no_resource_pack_folder_selected'));
+		else if (!isDirectory(e.pack_path)) errors.push(t('resource_pack_folder_not_found') + e.pack_path);
+	} else {
+		if (!e.zip_dir) errors.push(t('no_zip_folder'));
+		else if (pathExists(e.zip_dir) && !isDirectory(e.zip_dir)) errors.push(t('dp_not_folder') + e.zip_dir);
+		if (!zipFileName(e.zip_name)) errors.push(t('invalid_zip_name'));
+	}
 	if (!isValidNamespace(e.namespace || 'minecraft')) errors.push(t('invalid_texture_namespace'));
 	if (e.icon) {
 		for (let id of [plan.icon_texture_id, plan.icon_model_id]) {
@@ -1744,6 +1917,14 @@ function updateAtlasJSON(text, texture_ids, sync_permutations) {
 function textureBuffer(texture) {
 	return dataURLToBuffer(texture.canvas.toDataURL('image/png'));
 }
+function packIconBuffer() {
+	// pack.png for a new pack: the template icon scaled up without smoothing
+	let icon = findTexture('icon');
+	if (!icon || !icon.canvas || !icon.canvas.width) return null;
+	let {canvas, ctx} = makeCanvas(128, 128);
+	ctx.drawImage(icon.canvas, 0, 0, 128, 128);
+	return dataURLToBuffer(canvas.toDataURL('image/png'));
+}
 function backupFile(path, pack, stamp) {
 	let fs = getFS();
 	if (!fs.existsSync(path)) return;
@@ -1752,10 +1933,18 @@ function backupFile(path, pack, stamp) {
 	ensureDir(PathModule.dirname(target));
 	fs.copyFileSync(path, target);
 }
-function describePlan(plan) {
-	let rel = (p) => PathModule.relative(plan.pack, p).replace(/\\/g, '/');
-	let lines = plan.files.map(f => (pathExists(f.path) ? '♻ ' : '＋ ') + rel(f.path));
-	if (plan.atlas) lines.push((pathExists(plan.atlas) ? '✎ ' : '＋ ') + rel(plan.atlas));
+function planHeader(pack) {
+	if (pack.kind == 'zip') return `📦 ${PathModule.basename(pack.path)} — ${pack.existed ? t('archive_update') : t('archive_new')}`;
+	return `📁 ${pack.path}`;
+}
+async function describePlan(plan) {
+	let pack = await packStorage(plan.target).load();
+	let mark = (rel) => pack.exists(rel) ? '♻ ' : '＋ ';
+	let lines = [planHeader(pack)];
+	lines.push((pack.exists('pack.mcmeta') ? '· ' : '＋ ') + 'pack.mcmeta');
+	if (!pack.exists('pack.png') && (pack.kind == 'zip' || !pack.exists('pack.mcmeta')) && findTexture('icon')) lines.push('＋ pack.png');
+	for (let file of plan.files) lines.push(mark(file.rel) + file.rel);
+	if (plan.atlas) lines.push((pack.exists(plan.atlas) ? '✎ ' : '＋ ') + plan.atlas);
 	return lines;
 }
 async function runExport(quiet = false) {
@@ -1767,10 +1956,24 @@ async function runExport(quiet = false) {
 		Blockbench.showMessageBox({title: t('cannot_export'), icon: 'error', message: errors.map(escapeHTML).join('<br>')});
 		return;
 	}
-	let fs = getFS();
 	let written = [];
-	let stamp = new Date().toISOString().replace(/[:.]/g, '-');
+	let stamp = data.export.backup ? new Date().toISOString().replace(/[:.]/g, '-') : null;
 	try {
+		let pack = await packStorage(plan.target).load();
+		// Folder packs back up each overwritten file, zip archives are backed up as a whole on save
+		let file_stamp = pack.kind == 'folder' ? stamp : null;
+		let created = !pack.exists('pack.mcmeta');
+		if (created) {
+			pack.write('pack.mcmeta', mcmetaText(plan.version, 'rp'));
+			written.push('pack.mcmeta');
+		}
+		if (!pack.exists('pack.png') && (pack.kind == 'zip' || created)) {
+			let icon = packIconBuffer();
+			if (icon) {
+				pack.write('pack.png', icon);
+				written.push('pack.png');
+			}
+		}
 		for (let file of plan.files) {
 			let content;
 			if (file.kind == 'texture') {
@@ -1780,31 +1983,29 @@ async function runExport(quiet = false) {
 			} else {
 				content = file.content + '\n';
 			}
-			if (data.export.backup) backupFile(file.path, plan.pack, stamp);
-			ensureDir(PathModule.dirname(file.path));
-			fs.writeFileSync(file.path, content);
-			written.push(file.path);
+			pack.write(file.rel, content, file_stamp);
+			written.push(file.rel);
 		}
 		let atlas_changes = [];
 		if (plan.atlas) {
-			let text = fs.existsSync(plan.atlas) ? fs.readFileSync(plan.atlas, 'utf-8') : '';
+			let text = await readPackText(pack, plan.atlas) || '';
 			let ids = [`${plan.ns}:trims/entity/humanoid/${plan.id}`, `${plan.ns}:trims/entity/humanoid_leggings/${plan.id}`];
 			let result = updateAtlasJSON(text, ids, data.export.sync_permutations);
 			if (result.changes.length) {
-				if (data.export.backup) backupFile(plan.atlas, plan.pack, stamp);
-				ensureDir(PathModule.dirname(plan.atlas));
-				fs.writeFileSync(plan.atlas, JSON.stringify(result.json, null, detectIndent(text)) + (text.endsWith('\n') || !text ? '\n' : ''));
+				writeJSON(pack, plan.atlas, result.json, text, file_stamp);
 				written.push(plan.atlas);
 			}
 			atlas_changes = result.changes;
 		}
-		Prefs.set({pack_path: data.export.pack_path, namespace: data.export.namespace, icon_texture: data.export.icon_texture,
-			icon_model: data.export.icon_model, icon_parent: data.export.icon_parent});
+		await pack.save(stamp);
+		let e = data.export;
+		Prefs.set({pack_type: e.pack_type, pack_path: e.pack_path, zip_dir: e.zip_dir, zip_name: e.zip_name, namespace: e.namespace,
+			icon_texture: e.icon_texture, icon_model: e.icon_model, icon_parent: e.icon_parent, mc_version: data.mc_version});
 		data.last_export = {time: Date.now(), files: written.length};
 		if (quiet) {
 			notify(t('trim_exported_files', [plan.id, written.length]), 2500);
 		} else {
-			showExportResult(plan, written, atlas_changes);
+			showExportResult(plan, pack, written, atlas_changes);
 		}
 	} catch (err) {
 		showError(t('export_failed'), err);
@@ -1813,16 +2014,16 @@ async function runExport(quiet = false) {
 function itemSnippet(plan) {
 	return JSON.stringify({threshold: 0, model: {type: 'minecraft:model', model: plan.icon_model_id}}, null, 4);
 }
-function showExportResult(plan, written, atlas_changes) {
-	let rel = (p) => escapeHTML(PathModule.relative(plan.pack, p).replace(/\\/g, '/'));
-	let html = `<p>${t('files_written')}: <b>${written.length}</b></p><ul class="te_list">${written.map(p => `<li>${rel(p)}</li>`).join('')}</ul>`;
+function showExportResult(plan, pack, written, atlas_changes) {
+	let html = `<p>${t('written_to')}: <b class="te_break">${escapeHTML(pack.path)}</b></p>`;
+	html += `<p>${t('files_written')}: <b>${written.length}</b></p><ul class="te_list">${written.map(p => `<li>${escapeHTML(p)}</li>`).join('')}</ul>`;
 	if (atlas_changes.length) html += `<p>${t('atlas')}: ${atlas_changes.map(escapeHTML).join(', ')}</p>`;
 	if (plan.vanilla) html += `<p>${t('vanilla_atlas_note')}</p>`;
 	html += `<p class="te_hint">${t('in_game_press_f3_t_to_reload_resources')}</p>`;
 	new Dialog({
 		id: 'armor_trim_editor_export_result',
 		title: t('trim_exported'),
-		width: 560,
+		width: 580,
 		component: {template: `<div class="te_dialog_html">${html}</div>`},
 		buttons: [t('copy_items_entry'), t('datapack'), t('open_folder'), t('done')],
 		cancelIndex: 3,
@@ -1838,17 +2039,28 @@ function showExportResult(plan, written, atlas_changes) {
 				return;
 			}
 			if (index == 2) {
-				revealInFolder(plan.files[0].path);
+				revealInFolder(pack.kind == 'zip' ? pack.path : pack.abs(plan.files[0].rel));
 				return false;
 			}
 		},
 	}).show();
+}
+function planHolder(dialog, id) {
+	let holder = dialog.object && dialog.object.querySelector('#' + id);
+	if (!holder && dialog.object) {
+		holder = document.createElement('div');
+		holder.id = id;
+		holder.className = 'te_export_plan';
+		dialog.object.querySelector('.dialog_content').appendChild(holder);
+	}
+	return holder;
 }
 
 function openExportDialog() {
 	let data = D();
 	if (!data) return;
 	let e = data.export;
+	let preview_run = 0;
 	let dialog = new Dialog({
 		id: 'armor_trim_editor_export',
 		title: t('export_trim_to_resource_pack'),
@@ -1856,7 +2068,12 @@ function openExportDialog() {
 		form: {
 			trim_id: {label: t('trim_id'), type: 'text', value: data.trim_id,
 				description: t('file_name_and_pattern_asset_id_as_in_the')},
-			pack_path: {label: t('resource_pack_folder'), type: 'folder', value: e.pack_path},
+			pack_type: {label: t('rp_type'), type: 'inline_select', value: e.pack_type || 'zip',
+				options: {zip: t('rp_type_zip'), folder: t('rp_type_folder')}},
+			zip_dir: {label: t('zip_dir'), type: 'folder', value: e.zip_dir, description: t('zip_dir_desc'), condition: (f) => f.pack_type != 'folder'},
+			zip_name: {label: t('zip_name'), type: 'text', value: e.zip_name, description: t('zip_name_desc'), condition: (f) => f.pack_type != 'folder'},
+			pack_path: {label: t('resource_pack_folder'), type: 'folder', value: e.pack_path, description: t('rp_folder_desc'), condition: (f) => f.pack_type == 'folder'},
+			mc_version: {label: t('dp_version'), type: 'select', options: versionOptions(), value: mcVersion(data.mc_version).id, description: t('mc_version_desc')},
 			namespace: {label: t('texture_namespace'), type: 'text', value: e.namespace || 'minecraft',
 				description: t('namespace_of_the_pattern_asset_id')},
 			_atlas: {type: 'info', text: t('atlas_assets_minecraft_atlases_armor')},
@@ -1871,23 +2088,26 @@ function openExportDialog() {
 			_other: {type: 'info', text: t('other')},
 			backup: {label: t('back_up_overwritten_files'), type: 'checkbox', value: e.backup,
 				description: t('copies_go_to_blockbench_data_armor_trim')},
-			preview: {type: 'info', text: ''},
 		},
-		onFormChange(result) {
+		async onFormChange(result) {
+			let run = ++preview_run;
 			let tmp = JSON.parse(JSON.stringify(data));
 			applyExportForm(tmp, result);
 			let plan = exportPlan(tmp);
 			let errors = exportPlanErrors(tmp, plan);
-			let html = errors.length ? `<div class="te_error">${errors.map(escapeHTML).join('<br>')}</div>`
-				: `<div class="te_plan_list">${describePlan(plan).map(escapeHTML).join('<br>')}</div>`;
-			let holder = this.object && this.object.querySelector('#te_export_plan');
-			if (!holder && this.object) {
-				holder = document.createElement('div');
-				holder.id = 'te_export_plan';
-				holder.className = 'te_export_plan';
-				this.object.querySelector('.dialog_content').appendChild(holder);
+			let html;
+			if (errors.length) {
+				html = `<div class="te_error">${errors.map(escapeHTML).join('<br>')}</div>`;
+			} else {
+				try {
+					html = `<div class="te_plan_list">${(await describePlan(plan)).map(escapeHTML).join('<br>')}</div>`;
+				} catch (err) {
+					html = `<div class="te_error">${escapeHTML(err.message || String(err))}</div>`;
+				}
 			}
-			if (holder) holder.innerHTML = `<div class="te_hint">${t('will_be_written_overwrite_modify')}</div>` + html;
+			if (run != preview_run) return;
+			let holder = planHolder(this, 'te_export_plan');
+			if (holder) holder.innerHTML = `<div class="te_hint">${t('dp_will_be_written')}</div>` + html;
 		},
 		onConfirm(result) {
 			applyExportForm(data, result);
@@ -1905,8 +2125,12 @@ function applyExportForm(data, result) {
 		if (typeof setProjectTitle == 'function') setProjectTitle();
 	}
 	data.trim_id = new_id;
+	data.mc_version = result.mc_version;
 	let e = data.export;
-	e.pack_path = result.pack_path;
+	e.pack_type = result.pack_type == 'folder' ? 'folder' : 'zip';
+	if (result.pack_path !== undefined) e.pack_path = result.pack_path;
+	if (result.zip_dir !== undefined) e.zip_dir = result.zip_dir;
+	if (result.zip_name !== undefined) e.zip_name = zipFileName(result.zip_name) || result.zip_name;
 	e.namespace = sanitizeId(result.namespace) || 'minecraft';
 	e.register_atlas = result.register_atlas;
 	e.sync_permutations = result.sync_permutations;
@@ -1919,7 +2143,7 @@ function applyExportForm(data, result) {
 function quickExport() {
 	let data = D();
 	if (!data) return;
-	if (!data.export.pack_path || !data.last_export) {
+	if (!rpTargetPath(data.export) || !data.last_export) {
 		openExportDialog();
 		return;
 	}
@@ -1930,33 +2154,13 @@ function quickExport() {
 // Datapack generator
 // ============================================================================
 
-// Versions whose resource pack layout matches what the plugin exports (1.21.2+)
-const DATAPACK_VERSIONS = [
-	{id: '26.2', name: '26.2', format: 107, new_meta: true},
-	{id: '26.1.2', name: '26.1.2', format: 101, new_meta: true},
-	{id: '1.21.11', name: '1.21.11', format: 94, new_meta: true},
-	{id: '1.21.9', name: '1.21.9 – 1.21.10', format: 88, new_meta: true},
-	{id: '1.21.7', name: '1.21.7 – 1.21.8', format: 81},
-	{id: '1.21.6', name: '1.21.6', format: 80},
-	{id: '1.21.5', name: '1.21.5', format: 71},
-	{id: '1.21.4', name: '1.21.4', format: 61, template_item: true},
-	{id: '1.21.2', name: '1.21.2 – 1.21.3', format: 57, template_item: true},
-];
-const DEFAULT_DATAPACK_VERSION = '1.21.11';
 const LANG_CODE = /^[a-z]{2,3}_[a-z]{2,4}$/;
 
-function datapackVersion(id) {
-	return DATAPACK_VERSIONS.find(v => v.id == id) || DATAPACK_VERSIONS.find(v => v.id == DEFAULT_DATAPACK_VERSION);
-}
 function patternKey(data) {
 	return (data.export.namespace || 'minecraft') + ':' + data.trim_id;
 }
 function titleCase(id) {
 	return id.split(/[_\-.]+/).filter(Boolean).map(w => w[0].toUpperCase() + w.substring(1)).join(' ');
-}
-function readJSONFile(path) {
-	let text = getFS().readFileSync(path, 'utf-8').replace(/^﻿/, '');
-	return {text, json: JSON.parse(text)};
 }
 function parseNames(text) {
 	let names = [], skipped = [];
@@ -1974,20 +2178,22 @@ function parseNames(text) {
 	}
 	return {names, skipped};
 }
-function langNamesFromPack(data) {
+async function langNamesFromPack(data) {
 	// Existing names of this pattern in the resource pack, as "code=name" lines
-	let pack = data.export.pack_path;
+	let target = rpTargetPath(data.export);
 	let key = `trim_pattern.${data.export.namespace || 'minecraft'}.${data.trim_id}`;
 	let lines = [];
-	if (pack) {
-		let dir = PathModule.join(pack, 'assets', 'minecraft', 'lang');
-		for (let file of readDir(dir)) {
-			if (!file.endsWith('.json')) continue;
-			try {
-				let {json} = readJSONFile(PathModule.join(dir, file));
-				if (typeof json[key] == 'string') lines.push(file.replace('.json', '') + '=' + json[key]);
-			} catch (err) {}
-		}
+	if (target && pathExists(target)) {
+		try {
+			let pack = await packStorage(target).load();
+			for (let file of pack.listDir('assets/minecraft/lang')) {
+				if (!file.endsWith('.json')) continue;
+				try {
+					let json = JSON.parse(await readPackText(pack, 'assets/minecraft/lang/' + file));
+					if (typeof json[key] == 'string') lines.push(file.replace('.json', '') + '=' + json[key]);
+				} catch (err) {}
+			}
+		} catch (err) {}
 	}
 	if (!lines.some(l => l.startsWith('en_us='))) lines.unshift('en_us=' + titleCase(data.trim_id));
 	if (Language.code == 'ru' && !lines.some(l => l.startsWith('ru_ru='))) lines.push('ru_ru=');
@@ -1995,14 +2201,13 @@ function langNamesFromPack(data) {
 }
 
 function datapackPlan(data) {
-	let P = PathModule;
 	let d = data.datapack;
 	let ns = data.export.namespace || 'minecraft';
 	let id = data.trim_id;
-	let version = datapackVersion(d.version);
-	let plan = {dir: d.path, ns, id, version, key: ns + ':' + id, lang: [], skipped: []};
-	plan.mcmeta = P.join(d.path, 'pack.mcmeta');
-	plan.pattern_file = P.join(d.path, 'data', ns, 'trim_pattern', id + '.json');
+	let version = mcVersion(data.mc_version);
+	let name = zipFileName(d.name);
+	let plan = {file: d.dir && name ? PathModule.join(d.dir, name + '.zip') : '', ns, id, version, key: ns + ':' + id, lang: [], skipped: []};
+	plan.pattern_rel = `data/${ns}/trim_pattern/${id}.json`;
 	plan.pattern = {
 		asset_id: ns + ':' + id,
 		description: {translate: `trim_pattern.${ns}.${id}`},
@@ -2010,80 +2215,45 @@ function datapackPlan(data) {
 	};
 	// Before 1.21.5 a pattern needs a template item; structure_void cannot be obtained in survival
 	if (version.template_item) plan.pattern.template_item = 'minecraft:structure_void';
-	plan.zip = d.zip && d.path ? P.join(d.path, P.basename(d.path) + '.zip') : null;
 	let {names, skipped} = parseNames(d.names);
 	plan.skipped = skipped;
-	if (names.length && data.export.pack_path) {
-		for (let entry of names) {
-			let rel = `assets/minecraft/lang/${entry.code}.json`;
-			plan.lang.push(Object.assign({rel, path: P.join(data.export.pack_path, ...rel.split('/'))}, entry));
-		}
+	plan.rp_target = rpTargetPath(data.export);
+	if (names.length && plan.rp_target) {
+		for (let entry of names) plan.lang.push(Object.assign({rel: `assets/minecraft/lang/${entry.code}.json`}, entry));
 	}
-	plan.names_without_pack = names.length > 0 && !data.export.pack_path;
+	plan.names_without_pack = names.length > 0 && !plan.rp_target;
 	return plan;
 }
 function datapackErrors(data, plan) {
 	let errors = [];
+	let d = data.datapack;
 	let id_error = trimIdError(data.trim_id);
 	if (id_error) errors.push(id_error);
-	if (!plan.dir) errors.push(t('dp_no_folder'));
-	else if (pathExists(plan.dir) && !isDirectory(plan.dir)) errors.push(t('dp_not_folder') + plan.dir);
+	if (!d.dir) errors.push(t('dp_no_folder'));
+	else if (pathExists(d.dir) && !isDirectory(d.dir)) errors.push(t('dp_not_folder') + d.dir);
+	if (!zipFileName(d.name)) errors.push(t('invalid_zip_name'));
+	if (plan.rp_target && data.export.pack_type == 'folder' && !isDirectory(plan.rp_target)) errors.push(t('resource_pack_folder_not_found') + plan.rp_target);
 	return errors;
 }
-function describeDatapackPlan(plan) {
-	let rel = (base, p) => PathModule.relative(base, p).replace(/\\/g, '/');
-	let lines = [];
-	lines.push((pathExists(plan.mcmeta) ? '· ' : '＋ ') + 'pack.mcmeta');
-	lines.push((pathExists(plan.pattern_file) ? '♻ ' : '＋ ') + rel(plan.dir, plan.pattern_file));
-	if (plan.zip) lines.push((pathExists(plan.zip) ? '♻ ' : '＋ ') + rel(plan.dir, plan.zip));
-	let key = `trim_pattern.${plan.ns}.${plan.id}`;
-	for (let entry of plan.lang) {
-		let mark = '＋ ';
-		if (pathExists(entry.path)) {
-			let current;
-			try { current = readJSONFile(entry.path).json[key]; } catch (err) {}
-			mark = current === entry.name ? '· ' : '✎ ';
+async function describeDatapackPlan(plan) {
+	let dp = await new ZipPack(plan.file).load();
+	let lines = [planHeader(dp)];
+	lines.push((dp.exists('pack.mcmeta') ? '· ' : '＋ ') + 'pack.mcmeta');
+	lines.push((dp.exists(plan.pattern_rel) ? '♻ ' : '＋ ') + plan.pattern_rel);
+	if (plan.lang.length) {
+		let rp = await packStorage(plan.rp_target).load();
+		let key = `trim_pattern.${plan.ns}.${plan.id}`;
+		for (let entry of plan.lang) {
+			let mark = '＋ ';
+			if (rp.exists(entry.rel)) {
+				let current;
+				try { current = JSON.parse(await readPackText(rp, entry.rel))[key]; } catch (err) {}
+				mark = current === entry.name ? '· ' : '✎ ';
+			}
+			lines.push(mark + t('dp_rp') + PathModule.basename(rp.path) + ' › ' + entry.rel + ` — ${entry.name}`);
 		}
-		lines.push(mark + t('dp_rp') + entry.rel + ` — ${entry.name}`);
 	}
 	return lines;
-}
-function mcmetaText(version) {
-	let pack = {description: 'Armor trims'};
-	if (version.new_meta) {
-		pack.min_format = version.format;
-		pack.max_format = version.format;
-	} else {
-		pack.pack_format = version.format;
-	}
-	return JSON.stringify({pack}, null, '\t') + '\n';
-}
-function mcmetaFormat(json) {
-	let pack = json && json.pack || {};
-	let value = pack.max_format ?? pack.pack_format ?? pack.min_format;
-	return Array.isArray(value) ? value[0] : value;
-}
-function listFiles(dir, base = dir) {
-	let out = [];
-	for (let name of readDir(dir)) {
-		let path = PathModule.join(dir, name);
-		if (isDirectory(path)) out.push(...listFiles(path, base));
-		else out.push(PathModule.relative(base, path).replace(/\\/g, '/'));
-	}
-	return out;
-}
-async function buildDatapackZip(plan) {
-	let fs = getFS();
-	let zip = new JSZip();
-	for (let file of ['pack.mcmeta', 'pack.png']) {
-		let path = PathModule.join(plan.dir, file);
-		if (fs.existsSync(path)) zip.file(file, fs.readFileSync(path));
-	}
-	for (let rel of listFiles(PathModule.join(plan.dir, 'data'))) {
-		zip.file('data/' + rel, fs.readFileSync(PathModule.join(plan.dir, 'data', rel)));
-	}
-	let content = await zip.generateAsync({type: 'uint8array', compression: 'DEFLATE'});
-	fs.writeFileSync(plan.zip, Buffer.from(content));
 }
 async function runDatapackExport() {
 	let data = D();
@@ -2094,87 +2264,89 @@ async function runDatapackExport() {
 		Blockbench.showMessageBox({title: t('dp_title'), icon: 'error', message: errors.map(escapeHTML).join('<br>')});
 		return;
 	}
-	let fs = getFS();
-	let stamp = new Date().toISOString().replace(/[:.]/g, '-');
+	let stamp = data.export.backup ? new Date().toISOString().replace(/[:.]/g, '-') : null;
 	let written = [], notes = [];
 	try {
-		ensureDir(plan.dir);
-		if (!fs.existsSync(plan.mcmeta)) {
-			fs.writeFileSync(plan.mcmeta, mcmetaText(plan.version));
+		let dp = await new ZipPack(plan.file).load();
+		if (!dp.exists('pack.mcmeta')) {
+			dp.write('pack.mcmeta', mcmetaText(plan.version, 'dp'));
 			written.push('pack.mcmeta');
 		} else {
 			let format;
-			try { format = mcmetaFormat(readJSONFile(plan.mcmeta).json); } catch (err) {}
-			if (format != plan.version.format) notes.push(t('dp_format_mismatch', [String(format), plan.version.name, plan.version.format]));
+			try { format = mcmetaFormat(JSON.parse(await readPackText(dp, 'pack.mcmeta'))); } catch (err) {}
+			if (format != plan.version.dp) notes.push(t('dp_format_mismatch', [String(format), plan.version.name, plan.version.dp]));
 		}
-		if (data.export.backup) backupFile(plan.pattern_file, plan.dir, stamp);
-		ensureDir(PathModule.dirname(plan.pattern_file));
-		fs.writeFileSync(plan.pattern_file, JSON.stringify(plan.pattern, null, 2) + '\n');
-		written.push(`data/${plan.ns}/trim_pattern/${plan.id}.json`);
+		dp.write(plan.pattern_rel, JSON.stringify(plan.pattern, null, 2) + '\n');
+		written.push(plan.pattern_rel);
+		await dp.save(stamp);
 
-		let key = `trim_pattern.${plan.ns}.${plan.id}`;
-		for (let entry of plan.lang) {
-			let text = '', json = {};
-			if (fs.existsSync(entry.path)) ({text, json} = readJSONFile(entry.path));
-			if (json[key] === entry.name) continue;
-			json[key] = entry.name;
-			if (data.export.backup) backupFile(entry.path, data.export.pack_path, stamp);
-			ensureDir(PathModule.dirname(entry.path));
-			fs.writeFileSync(entry.path, JSON.stringify(json, null, detectIndent(text)) + (text.endsWith('\n') || !text ? '\n' : ''));
-			written.push(t('dp_rp') + entry.rel);
+		if (plan.lang.length) {
+			let rp = await packStorage(plan.rp_target).load();
+			let file_stamp = rp.kind == 'folder' ? stamp : null;
+			if (!rp.exists('pack.mcmeta')) rp.write('pack.mcmeta', mcmetaText(plan.version, 'rp'));
+			let key = `trim_pattern.${plan.ns}.${plan.id}`;
+			for (let entry of plan.lang) {
+				let text = await readPackText(rp, entry.rel) || '';
+				let json = text ? JSON.parse(text) : {};
+				if (json[key] === entry.name) continue;
+				json[key] = entry.name;
+				writeJSON(rp, entry.rel, json, text, file_stamp);
+				written.push(t('dp_rp') + PathModule.basename(rp.path) + ' › ' + entry.rel);
+			}
+			await rp.save(stamp);
 		}
 		if (plan.names_without_pack) notes.push(t('dp_names_need_pack'));
 		for (let line of plan.skipped) notes.push(t('dp_bad_name_line', [line]));
-
-		if (plan.zip) {
-			await buildDatapackZip(plan);
-			written.push(PathModule.basename(plan.zip));
-		}
-		Prefs.set({datapack_path: data.datapack.path, datapack_version: data.datapack.version});
+		Prefs.set({datapack_dir: data.datapack.dir, datapack_name: data.datapack.name, mc_version: data.mc_version});
 		showDatapackResult(plan, written, notes);
 	} catch (err) {
 		showError(t('dp_title'), err);
 	}
 }
-function openDatapackDialog() {
+async function openDatapackDialog() {
 	let data = D();
 	if (!data) return;
 	let d = data.datapack;
-	if (!d.names) d.names = langNamesFromPack(data);
-	let versions = {};
-	for (let v of DATAPACK_VERSIONS) versions[v.id] = v.name;
+	if (!d.names) d.names = await langNamesFromPack(data);
+	let preview_run = 0;
 	let dialog = new Dialog({
 		id: 'armor_trim_editor_datapack',
 		title: t('dp_title'),
 		width: 640,
 		form: {
 			_pattern: {type: 'info', text: t('dp_pattern_info', [patternKey(data)])},
-			path: {label: t('dp_folder'), type: 'folder', value: d.path, description: t('dp_folder_desc')},
-			version: {label: t('dp_version'), type: 'select', options: versions, value: datapackVersion(d.version).id},
+			dir: {label: t('dp_dir'), type: 'folder', value: d.dir, description: t('dp_dir_desc')},
+			name: {label: t('zip_name'), type: 'text', value: d.name, description: t('dp_name_desc')},
+			version: {label: t('dp_version'), type: 'select', options: versionOptions(), value: mcVersion(data.mc_version).id},
 			decal: {label: 'Decal', type: 'checkbox', value: d.decal, description: t('dp_decal_desc')},
 			names: {label: t('dp_names'), type: 'textarea', height: 64, value: d.names,
 				description: t('dp_names_desc', [`${data.export.namespace || 'minecraft'}.${data.trim_id}`])},
-			zip: {label: t('dp_zip'), type: 'checkbox', value: d.zip, description: t('dp_zip_desc')},
 		},
-		onFormChange(result) {
+		async onFormChange(result) {
+			let run = ++preview_run;
 			let tmp = JSON.parse(JSON.stringify(data));
-			Object.assign(tmp.datapack, result);
+			Object.assign(tmp.datapack, {dir: result.dir, name: result.name, decal: result.decal, names: result.names});
+			tmp.mc_version = result.version;
 			let plan = datapackPlan(tmp);
 			let errors = datapackErrors(tmp, plan);
-			let html = errors.length ? `<div class="te_error">${errors.map(escapeHTML).join('<br>')}</div>`
-				: `<div class="te_plan_list">${describeDatapackPlan(plan).map(escapeHTML).join('<br>')}</div>`;
-			if (!errors.length && plan.names_without_pack) html += `<div class="te_hint">${t('dp_names_need_pack')}</div>`;
-			let holder = this.object && this.object.querySelector('#te_datapack_plan');
-			if (!holder && this.object) {
-				holder = document.createElement('div');
-				holder.id = 'te_datapack_plan';
-				holder.className = 'te_export_plan';
-				this.object.querySelector('.dialog_content').appendChild(holder);
+			let html;
+			if (errors.length) {
+				html = `<div class="te_error">${errors.map(escapeHTML).join('<br>')}</div>`;
+			} else {
+				try {
+					html = `<div class="te_plan_list">${(await describeDatapackPlan(plan)).map(escapeHTML).join('<br>')}</div>`;
+				} catch (err) {
+					html = `<div class="te_error">${escapeHTML(err.message || String(err))}</div>`;
+				}
+				if (plan.names_without_pack) html += `<div class="te_hint">${t('dp_names_need_pack')}</div>`;
 			}
+			if (run != preview_run) return;
+			let holder = planHolder(this, 'te_datapack_plan');
 			if (holder) holder.innerHTML = `<div class="te_hint">${t('dp_will_be_written')}</div>` + html;
 		},
 		onConfirm(result) {
-			Object.assign(d, {path: result.path, version: result.version, decal: result.decal, names: result.names, zip: result.zip});
+			Object.assign(d, {dir: result.dir, name: zipFileName(result.name) || result.name, decal: result.decal, names: result.names});
+			data.mc_version = result.version;
 			runDatapackExport();
 		},
 	});
@@ -2231,7 +2403,8 @@ function guideButtons(key) {
 	};
 }
 function showDatapackResult(plan, written, notes) {
-	let html = `<p>${t('files_written')}: <b>${written.length}</b></p><ul class="te_list">${written.map(p => `<li>${escapeHTML(p)}</li>`).join('')}</ul>`;
+	let html = `<p>${t('written_to')}: <b class="te_break">${escapeHTML(plan.file)}</b></p>`;
+	html += `<p>${t('files_written')}: <b>${written.length}</b></p><ul class="te_list">${written.map(p => `<li>${escapeHTML(p)}</li>`).join('')}</ul>`;
 	for (let note of notes) html += `<p class="te_warn_text">${escapeHTML(note)}</p>`;
 	html += gameGuideHTML(plan.key);
 	new Dialog(Object.assign({
@@ -2260,26 +2433,24 @@ function openGameGuide() {
 // Import
 // ============================================================================
 
-function scanPackTrims(pack) {
-	let P = PathModule;
+async function scanPackTrims(pack) {
 	let found = {};
-	let add = (ns, id, key, path) => {
+	let add = (ns, id, key, rel) => {
 		let k = ns + ':' + id;
 		if (!found[k]) found[k] = {ns, id, humanoid: null, leggings: null, registered: false};
-		if (key) found[k][key] = path;
+		if (key) found[k][key] = rel;
 	};
-	let assets = P.join(pack, 'assets');
-	for (let ns of readDir(assets)) {
+	for (let ns of pack.listDir('assets')) {
 		for (let [layer, key] of [['humanoid', 'humanoid'], ['humanoid_leggings', 'leggings']]) {
-			let dir = P.join(assets, ns, 'textures', 'trims', 'entity', layer);
-			for (let file of readDir(dir)) {
+			let dir = `assets/${ns}/textures/trims/entity/${layer}`;
+			for (let file of pack.listDir(dir)) {
 				let m = file.match(/^([a-z0-9_.\-]+)\.png$/);
-				if (m) add(ns, m[1], key, P.join(dir, file));
+				if (m) add(ns, m[1], key, dir + '/' + file);
 			}
 		}
 	}
 	try {
-		let atlas = JSON.parse(getFS().readFileSync(P.join(assets, 'minecraft', 'atlases', 'armor_trims.json'), 'utf-8'));
+		let atlas = JSON.parse(await readPackText(pack, 'assets/minecraft/atlases/armor_trims.json'));
 		for (let source of atlas.sources || []) {
 			for (let t of source.textures || []) {
 				let p = parseResourceId(t);
@@ -2293,20 +2464,25 @@ function scanPackTrims(pack) {
 	} catch (err) {}
 	return Object.values(found).sort((a, b) => a.id.localeCompare(b.id));
 }
-function readPNG(path) {
-	if (!path || !pathExists(path)) return null;
-	return bufferToDataURL(getFS().readFileSync(path));
+async function readPackPNG(pack, rel) {
+	if (!rel) return null;
+	let buffer = await pack.read(rel);
+	return buffer ? bufferToDataURL(buffer) : null;
+}
+function iconRel(pattern, id) {
+	let p = parseResourceId(pattern.replace(/\{id\}/g, id));
+	return `assets/${p.ns}/textures/${p.path}.png`;
 }
 function openImportDialog() {
 	let prefs = Prefs.get();
-	let pack = prefs.pack_path || '';
+	let pack = prefs.import_path || rpTargetPath({pack_type: prefs.pack_type, pack_path: prefs.pack_path, zip_dir: prefs.zip_dir, zip_name: prefs.zip_name}) || '';
 	let dialog = new Dialog({
 		id: 'armor_trim_editor_import',
 		title: t('open_trim_from_resource_pack'),
 		width: 600,
 		component: {
 			data() {
-				return {pack, list: [], selected: '', icon_pattern: prefs.icon_texture || DEFAULT_ICON_ID, error: '', filter: ''};
+				return {pack, list: [], selected: '', icon_pattern: prefs.icon_texture || DEFAULT_ICON_ID, error: '', filter: '', storage: null};
 			},
 			computed: {
 				filtered() {
@@ -2315,24 +2491,31 @@ function openImportDialog() {
 				},
 			},
 			methods: {
-				pick() {
+				pickFolder() {
 					let path = Blockbench.pickDirectory({title: t('resource_pack_folder'), startpath: this.pack || undefined, resource_id: 'armor_trim_editor_pack'});
 					if (path) { this.pack = path; this.scan(); }
+				},
+				pickZip() {
+					Blockbench.import({extensions: ['zip'], type: t('rp_type_zip'), readtype: 'none', resource_id: 'armor_trim_editor_pack'}, (files) => {
+						if (files[0] && files[0].path) { this.pack = files[0].path; this.scan(); }
+					});
 				},
 				confirmDialog() {
 					if (Dialog.open && Dialog.open.id == 'armor_trim_editor_import') Dialog.open.confirm();
 				},
-				scan() {
+				async scan() {
 					this.error = '';
+					this.list = [];
+					this.storage = null;
 					try {
-						if (!this.pack || !isDirectory(this.pack)) { this.list = []; return; }
-						let list = scanPackTrims(this.pack);
-						for (let trim of list) {
-							let id = parseResourceId(this.icon_pattern.replace(/\{id\}/g, trim.id));
-							trim.icon = readPNG(PathModule.join(this.pack, 'assets', id.ns, 'textures', id.path + '.png'));
-						}
+						if (!this.pack || !pathExists(this.pack)) return;
+						if (!/\.zip$/i.test(this.pack) && !isDirectory(this.pack)) return;
+						let storage = await packStorage(this.pack).load();
+						let list = await scanPackTrims(storage);
+						for (let trim of list) trim.icon = await readPackPNG(storage, iconRel(this.icon_pattern, trim.id));
+						this.storage = storage;
 						this.list = list;
-						if (!this.list.length) this.error = t('no_trims_found_in_this_pack');
+						if (!list.length) this.error = t('no_trims_found_in_this_pack');
 					} catch (err) {
 						this.error = err.message || String(err);
 					}
@@ -2341,7 +2524,9 @@ function openImportDialog() {
 			mounted() { this.scan(); },
 			template: `
 				<div class="te_import">
-					<div class="te_form_row"><label>${t('pack_2')}</label><input type="text" v-model="pack" @change="scan()" class="dark_bordered"><button @click="pick()"><i class="material-icons">folder</i></button></div>
+					<div class="te_form_row"><label>${t('pack_2')}</label><input type="text" v-model="pack" @change="scan()" class="dark_bordered" placeholder="${t('folder_or_zip')}">
+						<button @click="pickFolder()" title="${t('rp_type_folder')}"><i class="material-icons">folder</i></button>
+						<button @click="pickZip()" title="${t('rp_type_zip')}"><i class="material-icons">folder_zip</i></button></div>
 					<div class="te_form_row"><label>${t('icon')}</label><input type="text" v-model="icon_pattern" @change="scan()" class="dark_bordered"></div>
 					<div class="te_form_row"><label>${t('search')}</label><input type="text" v-model="filter" class="dark_bordered"></div>
 					<ul class="te_trim_list">
@@ -2361,20 +2546,24 @@ function openImportDialog() {
 		onConfirm() {
 			let vm = this.content_vue;
 			let trim = vm && vm.list.find(t => t.ns + ':' + t.id == vm.selected);
-			if (!trim) return false;
-			Prefs.set({pack_path: vm.pack, icon_texture: vm.icon_pattern});
-			let icon_id = parseResourceId(vm.icon_pattern.replace(/\{id\}/g, trim.id));
-			let icon_path = PathModule.join(vm.pack, 'assets', icon_id.ns, 'textures', icon_id.path + '.png');
-			importTrim({
-				trim_id: trim.id,
-				humanoid: readPNG(trim.humanoid),
-				leggings: readPNG(trim.leggings),
-				icon: readPNG(icon_path),
-				export: {pack_path: vm.pack, namespace: trim.ns, icon_texture: vm.icon_pattern, icon_model: vm.icon_pattern},
-			});
+			if (!trim || !vm.storage) return false;
+			Prefs.set({import_path: vm.pack, icon_texture: vm.icon_pattern});
+			importFromPack(vm.storage, trim, vm.icon_pattern).catch(err => showError(t('could_not_create_trim'), err));
 		},
 	});
 	dialog.show();
+}
+async function importFromPack(storage, trim, icon_pattern) {
+	let target = storage.kind == 'zip'
+		? {pack_type: 'zip', zip_dir: PathModule.dirname(storage.path), zip_name: PathModule.basename(storage.path).replace(/\.zip$/i, '')}
+		: {pack_type: 'folder', pack_path: storage.path};
+	await importTrim({
+		trim_id: trim.id,
+		humanoid: await readPackPNG(storage, trim.humanoid),
+		leggings: await readPackPNG(storage, trim.leggings),
+		icon: await readPackPNG(storage, iconRel(icon_pattern, trim.id)),
+		export: Object.assign({namespace: trim.ns, icon_texture: icon_pattern, icon_model: icon_pattern}, target),
+	});
 }
 async function importTrim(opts) {
 	let res = 1;
@@ -2408,7 +2597,6 @@ function openNewTrimDialog() {
 			resolution: {label: t('resolution'), type: 'select', value: '1', options: {'1': '64×32 (16x)', '2': '128×64 (32x)', '4': '256×128 (64x)'}},
 			skin: {label: t('skin'), type: 'select', options: skins, value: 'steve'},
 			armor: {label: t('armor_under_trim'), type: 'select', options: armors, value: 'diamond'},
-			pack_path: {label: t('resource_pack_export'), type: 'folder', value: prefs.pack_path || ''},
 		},
 		async onConfirm(result) {
 			let id = sanitizeId(result.trim_id) || 'new_trim';
@@ -2417,7 +2605,6 @@ function openNewTrimDialog() {
 				resolution: parseInt(result.resolution) || 1,
 				armor: result.armor,
 				skin: {source: 'default', id: result.skin, slim: !!DEFAULT_SLIM[result.skin], name: ''},
-				export: {pack_path: result.pack_path},
 			};
 			if (result.base.startsWith('vanilla:')) {
 				let pattern = result.base.substring(8);
@@ -2432,7 +2619,6 @@ function openNewTrimDialog() {
 					return;
 				}
 			}
-			if (result.pack_path) Prefs.set({pack_path: result.pack_path});
 			startNewTrim(opts);
 		},
 	}).show();
@@ -2729,7 +2915,7 @@ function createPanels() {
 					return palette ? palette.map(h => '#' + h) : PALETTE_KEY;
 				},
 				packShort() {
-					let p = this.d && this.d.export.pack_path;
+					let p = this.d && rpTargetPath(this.d.export);
 					if (!p) return t('no_resource_pack');
 					return p.length > 34 ? '…' + p.substring(p.length - 33) : p;
 				},
@@ -2763,7 +2949,7 @@ function createPanels() {
 						<button @click="icon()"><i class="material-icons">auto_fix_high</i>${t('icon')}</button>
 						<button @click="check()"><i class="material-icons">fact_check</i>${t('check')}</button>
 					</div>
-					<div class="te_small te_path" :title="d.export.pack_path"><b>{{ d.trim_id }}</b> → {{ packShort }}</div>
+					<div class="te_small te_path"><b>{{ d.trim_id }}</b> → {{ packShort }}</div>
 					<div v-if="checked" class="te_issues">
 						<div v-if="!issues.length" class="te_hint">${t('no_problems_found')}</div>
 						<div v-for="issue in issues" class="te_issue" :class="issue.level">
@@ -2858,6 +3044,7 @@ const CSS = `
 .te_guide li { display: list-item; list-style: decimal outside; margin: 3px 0; }
 .te_code { font-family: var(--font-code, monospace); font-size: 12px; background: var(--color-back); border: 1px solid var(--color-border); padding: 6px 8px; white-space: pre-wrap; word-break: break-all; user-select: text; margin: 4px 0; }
 .te_warn_text { color: #e5b84b; }
+.te_break { word-break: break-all; }
 `;
 
 // ============================================================================
@@ -3239,7 +3426,6 @@ function getTranslations() {
 			other: "**Other**",
 			back_up_overwritten_files: "Back up overwritten files",
 			copies_go_to_blockbench_data_armor_trim: "Copies go to Blockbench data/armor_trim_editor_backups.",
-			will_be_written_overwrite_modify: "Will be written (♻ overwrite, ✎ modify):",
 			open_trim_from_resource_pack: "Open trim from resource pack",
 			no_trims_found_in_this_pack: "No trims found in this pack.",
 			pack_2: "Pack",
@@ -3252,7 +3438,6 @@ function getTranslations() {
 			start_from: "Start from",
 			resolution: "Resolution",
 			armor_under_trim: "Armor under trim",
-			resource_pack_export: "Resource pack (export)",
 			could_not_load_vanilla_trim: "Could not load vanilla trim",
 			other_file: "Other file…",
 			trim_editor_settings: "Trim Editor settings",
@@ -3335,19 +3520,15 @@ function getTranslations() {
 			datapack_short: "Datapack",
 			dp_title: "Trim pattern datapack",
 			dp_pattern_info: "Pattern **%0**. The trim ID and namespace come from the export settings.",
-			dp_folder: "Datapack folder",
-			dp_folder_desc: "An existing datapack or an empty folder. pack.mcmeta is created only if it is missing.",
 			dp_version: "Minecraft version",
 			dp_decal_desc: "Draw the trim only over armor pixels.",
 			dp_names: "Names",
 			dp_names_desc: "One per line: language=name, e.g. en_us=Clouds. Written to assets/minecraft/lang/<language>.json of the resource pack as trim_pattern.%0.",
-			dp_zip: "Build zip",
-			dp_zip_desc: "Creates <folder name>.zip inside the datapack folder with pack.mcmeta, pack.png and data/.",
 			dp_will_be_written: "Will be written (♻ overwrite, ✎ modify, · unchanged):",
-			dp_no_folder: "No datapack folder selected.",
+			dp_no_folder: "No datapacks folder selected.",
 			dp_not_folder: "Not a folder: ",
 			dp_rp: "resource pack: ",
-			dp_names_need_pack: "Names are skipped: set the resource pack folder in the export settings first.",
+			dp_names_need_pack: "Names are skipped: choose the resource pack in the export settings first.",
 			dp_bad_name_line: "Skipped line (expected language=name): %0",
 			dp_format_mismatch: "pack.mcmeta was kept as is, but its format is %0 while %1 uses %2.",
 			dp_done_title: "Datapack updated",
@@ -3357,7 +3538,7 @@ function getTranslations() {
 			guide_menu: "How to use a trim in game",
 			guide_title: "Using the trim in game",
 			guide_server_h: "Server",
-			guide_server_1: "Put the datapack folder or zip into <code>world/datapacks</code> of the main world.",
+			guide_server_1: "Put the datapack zip into <code>world/datapacks</code> of the main world, or pick that folder in the generator right away.",
 			guide_server_2: "Restart the server: new trim patterns are loaded only when the world starts, <code>/reload</code> does not add them.",
 			guide_server_3: "Players need the resource pack with the textures (the <b>Export</b> button).",
 			guide_give_h: "Command",
@@ -3365,6 +3546,26 @@ function getTranslations() {
 			guide_smithing: "The pattern has no smithing template, so it can only be applied by commands or plugins.",
 			guide_plugin_h: "Bukkit / Paper plugin",
 			guide_plugin_note: "On Spigot use <code>Registry.TRIM_PATTERN.get(key)</code>. If the pattern is <code>null</code>, the datapack was not loaded.",
+			rp_type: "Save as",
+			rp_type_zip: "Zip archive",
+			rp_type_folder: "Folder",
+			zip_dir: "Archive folder",
+			zip_dir_desc: "For example .minecraft/resourcepacks. A new archive gets pack.mcmeta and pack.png.",
+			zip_name: "Archive name",
+			zip_name_desc: "Without .zip. An existing archive is updated, everything else in it is kept.",
+			rp_folder_desc: "An unpacked resource pack. pack.mcmeta is created if the folder has none.",
+			mc_version_desc: "Sets the format in pack.mcmeta of a new pack.",
+			no_zip_folder: "No folder for the archive selected.",
+			invalid_zip_name: "Invalid archive name.",
+			archive_new: "new archive",
+			archive_update: "will be updated",
+			written_to: "Written to",
+			dp_dir: "Datapacks folder",
+			dp_dir_desc: "For example saves/<world>/datapacks. The datapack is saved as a zip archive.",
+			dp_name_desc: "Without .zip. An existing datapack is updated, its other trims are kept.",
+			folder_or_zip: "Folder or .zip",
+			pose_spread: "Standing, parts apart",
+			pose_tpose_spread: "T-pose, parts apart",
 		},
 		ru: {
 			quartz: "Кварц",
@@ -3518,7 +3719,6 @@ function getTranslations() {
 			other: "**Прочее**",
 			back_up_overwritten_files: "Резервные копии перезаписываемых файлов",
 			copies_go_to_blockbench_data_armor_trim: "Копии складываются в папку данных Blockbench/armor_trim_editor_backups.",
-			will_be_written_overwrite_modify: "Будут записаны (♻ — перезапись, ✎ — изменение):",
 			open_trim_from_resource_pack: "Открыть отделку из ресурспака",
 			no_trims_found_in_this_pack: "В этом ресурспаке отделок не найдено.",
 			pack_2: "Ресурспак",
@@ -3531,7 +3731,6 @@ function getTranslations() {
 			start_from: "Основа",
 			resolution: "Разрешение",
 			armor_under_trim: "Броня под отделкой",
-			resource_pack_export: "Ресурспак (для экспорта)",
 			could_not_load_vanilla_trim: "Не удалось загрузить ванильную отделку",
 			other_file: "Другой файл…",
 			trim_editor_settings: "Настройки Trim Editor",
@@ -3614,19 +3813,15 @@ function getTranslations() {
 			datapack_short: "Датапак",
 			dp_title: "Датапак паттерна отделки",
 			dp_pattern_info: "Паттерн **%0**. ID отделки и namespace берутся из настроек экспорта.",
-			dp_folder: "Папка датапака",
-			dp_folder_desc: "Существующий датапак или пустая папка. pack.mcmeta создаётся, только если его нет.",
 			dp_version: "Версия Minecraft",
 			dp_decal_desc: "Рисовать отделку только поверх пикселей брони.",
 			dp_names: "Названия",
 			dp_names_desc: "По одному в строке: язык=название, например ru_ru=Облака. Записываются в assets/minecraft/lang/<язык>.json ресурспака как trim_pattern.%0.",
-			dp_zip: "Собрать zip",
-			dp_zip_desc: "Создаёт <имя папки>.zip внутри папки датапака: pack.mcmeta, pack.png и data/.",
 			dp_will_be_written: "Будут записаны (♻ — перезапись, ✎ — изменение, · — без изменений):",
-			dp_no_folder: "Не выбрана папка датапака.",
+			dp_no_folder: "Не выбрана папка datapacks.",
 			dp_not_folder: "Это не папка: ",
 			dp_rp: "ресурспак: ",
-			dp_names_need_pack: "Названия пропущены: сначала укажите папку ресурспака в настройках экспорта.",
+			dp_names_need_pack: "Названия пропущены: сначала выберите ресурспак в настройках экспорта.",
 			dp_bad_name_line: "Строка пропущена (нужно язык=название): %0",
 			dp_format_mismatch: "pack.mcmeta оставлен как есть, но его формат %0, а для %1 нужен %2.",
 			dp_done_title: "Датапак обновлён",
@@ -3636,7 +3831,7 @@ function getTranslations() {
 			guide_menu: "Как выдать отделку в игре",
 			guide_title: "Как выдать отделку в игре",
 			guide_server_h: "Сервер",
-			guide_server_1: "Положите папку или zip датапака в <code>world/datapacks</code> основного мира.",
+			guide_server_1: "Положите zip датапака в <code>world/datapacks</code> основного мира или сразу выберите эту папку в генераторе.",
 			guide_server_2: "Перезапустите сервер: новые паттерны отделки загружаются только при запуске мира, <code>/reload</code> их не добавит.",
 			guide_server_3: "Игрокам нужен ресурспак с текстурами (кнопка <b>Экспорт</b>).",
 			guide_give_h: "Командой",
@@ -3644,6 +3839,26 @@ function getTranslations() {
 			guide_smithing: "У паттерна нет кузнечного шаблона, поэтому наложить его можно только командой или плагином.",
 			guide_plugin_h: "Плагин Bukkit / Paper",
 			guide_plugin_note: "На Spigot используйте <code>Registry.TRIM_PATTERN.get(key)</code>. Если паттерн <code>null</code> — датапак не загрузился.",
+			rp_type: "Сохранить как",
+			rp_type_zip: "Zip-архив",
+			rp_type_folder: "Папка",
+			zip_dir: "Папка для архива",
+			zip_dir_desc: "Например .minecraft/resourcepacks. В новый архив добавляются pack.mcmeta и pack.png.",
+			zip_name: "Имя архива",
+			zip_name_desc: "Без .zip. Если архив уже есть, он обновляется, всё остальное в нём сохраняется.",
+			rp_folder_desc: "Распакованный ресурспак. Если в папке нет pack.mcmeta, он будет создан.",
+			mc_version_desc: "Задаёт формат в pack.mcmeta нового пака.",
+			no_zip_folder: "Не выбрана папка для архива.",
+			invalid_zip_name: "Недопустимое имя архива.",
+			archive_new: "новый архив",
+			archive_update: "будет обновлён",
+			written_to: "Записано в",
+			dp_dir: "Папка datapacks",
+			dp_dir_desc: "Например saves/<мир>/datapacks. Датапак сохраняется zip-архивом.",
+			dp_name_desc: "Без .zip. Если датапак уже есть, он обновляется, остальные отделки в нём сохраняются.",
+			folder_or_zip: "Папка или .zip",
+			pose_spread: "Стойка, части раздвинуты",
+			pose_tpose_spread: "T-поза, части раздвинуты",
 		},
 	};
 }

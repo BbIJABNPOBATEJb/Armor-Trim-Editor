@@ -19,20 +19,23 @@ template icon and export everything into your resource pack in one click.
 - 🔍 **Palette highlight**: shows which pixels follow the trim material and which keep a fixed color.
 - 🛡 **Reference armor** under the trim: leather (with dye color), chainmail, iron, copper, gold, diamond,
   netherite, turtle shell or none.
-- 🤸 **18 poses and animations** ported from the game's `HumanoidModel`: walking, sprinting, sneaking, riding,
-  attack, bow, crossbow, shield, trident, spyglass, swimming, elytra, T-pose and more, plus head yaw/pitch sliders.
+- 🤸 **20 poses and animations** ported from the game's `HumanoidModel`: walking, sprinting, sneaking, riding,
+  attack, bow, crossbow, shield, trident, spyglass, swimming, elytra, T-pose and more, plus two poses with the body
+  parts pulled apart and head yaw/pitch sliders.
 - 🧍 **Skins**: all 9 default skins (wide and slim), any PNG file (legacy 64×32 skins are converted) or a
   player name.
 - 🏷 **Icon generator** for the smithing template item: recolor a vanilla template (or your own icon) with a
   body and glyph color, or sample the colors from the trim.
 - ✅ **Checks** before export: pixels outside the UV layout, semi-transparent pixels (trims render as cutout),
   colors that are almost but not exactly on the palette — each with a one-click fix.
-- 📦 **Export to a resource pack**: both trim textures, the icon texture and model, and registration in
-  `atlases/armor_trims.json` (keeps the file's indentation and path style, and adds missing vanilla palettes such as
-  `copper_darker`).
-- 📂 **Import** any trim from a resource pack to keep editing it; HD trims (128×64 and up) are supported.
-- 🧬 **Datapack generator**: the `trim_pattern` file for Minecraft 1.21.2 – 26.2, pattern names in the resource
-  pack's lang files and a ready-to-upload zip, plus a short guide with a `/give` command and Paper code.
+- 📦 **Export to a resource pack** — a ready zip archive (with `pack.mcmeta` and `pack.png`) or a pack folder:
+  both trim textures, the icon texture and model, and registration in `atlases/armor_trims.json` (keeps the file's
+  indentation and path style, adds missing vanilla palettes such as `copper_darker`). Exporting another trim into
+  the same archive adds it next to the others.
+- 📂 **Import** any trim from a resource pack folder or zip to keep editing it; HD trims (128×64 and up) are supported.
+- 🧬 **Datapack generator**: a datapack zip with the `trim_pattern` for Minecraft 1.21.2 – 26.2 (straight into
+  `saves/<world>/datapacks` if you like), pattern names in the resource pack's lang files, plus a short guide with a
+  `/give` command and Paper code.
 - 🌍 English and Russian interface.
 
 ## 🌈 Material preview
@@ -54,6 +57,11 @@ the original gray palette.
 Poses are preview-only: they move the model, never the textures, and animations pause while you paint.
 
 <p align="center"><img src="docs/poses.png" alt="Poses" width="100%"></p>
+
+*Standing* and *T-pose* also come with the body parts pulled apart, so the armor of every part can be seen and
+painted on its own — including the inner sides of arms and legs:
+
+<p align="center"><img src="docs/poses_apart.png" alt="Poses with the parts apart" width="80%"></p>
 <p align="center"><img src="docs/skins.png" alt="Default skins and the skin tab" width="100%"></p>
 
 ## 🏷 Template icon
@@ -68,18 +76,22 @@ it is an ordinary 16×16 texture named `icon`.
 
 <p align="center"><img src="docs/export.png" alt="Export dialog and result" width="100%"></p>
 
-With trim ID `ember` and the default settings, an export writes:
+The export goes into a **zip archive** (for example `.minecraft/resourcepacks/armor_trims.zip`) or into an
+unpacked **folder**. A new pack gets `pack.mcmeta` for the chosen Minecraft version, a new archive also gets
+`pack.png` made from the template icon. If the archive already exists it is updated: other trims and files in it
+are kept. With trim ID `tides` and the default settings, an export writes:
 
 | File | What it is |
 |---|---|
-| `assets/minecraft/textures/trims/entity/humanoid/ember.png` | helmet, chestplate and boots |
-| `assets/minecraft/textures/trims/entity/humanoid_leggings/ember.png` | leggings |
-| `assets/minecraft/textures/item/ember_armor_trim_smithing_template.png` | template icon |
-| `assets/minecraft/models/item/ember_armor_trim_smithing_template.json` | icon model (`item/generated`) |
+| `assets/minecraft/textures/trims/entity/humanoid/tides.png` | helmet, chestplate and boots |
+| `assets/minecraft/textures/trims/entity/humanoid_leggings/tides.png` | leggings |
+| `assets/minecraft/textures/item/tides_armor_trim_smithing_template.png` | template icon |
+| `assets/minecraft/models/item/tides_armor_trim_smithing_template.json` | icon model (`item/generated`) |
 | `assets/minecraft/atlases/armor_trims.json` | adds both textures to the trim atlas |
 
 The texture namespace, icon paths (`{id}` is replaced with the trim ID) and model parent are configurable, and
-every setting is remembered. Overwritten files are backed up to the Blockbench data folder. After the first
+every setting is remembered. Overwritten files (or the whole archive) are backed up to the Blockbench data
+folder. After the first
 export, **Quick export** (`Ctrl + Alt + E`) repeats it without the dialog.
 
 The result dialog can copy an item model entry (for a `range_dispatch` on `custom_model_data`). Item
@@ -89,23 +101,24 @@ definitions are never edited by the plugin.
 
 ## 🧬 Datapack
 
-A new trim pattern also has to exist on the server. **Datapack** writes it into a datapack folder — an existing
-one or a new one:
+A new trim pattern also has to exist on the server. **Datapack** writes it into a datapack **zip** — pick
+`saves/<world>/datapacks` to put it straight into a world. An existing archive is updated and keeps its other
+trims:
 
 <p align="center"><img src="docs/datapack.png" alt="Datapack dialog and in-game guide" width="100%"></p>
 
 | Setting | What it does |
 |---|---|
-| Datapack folder | `data/<namespace>/trim_pattern/<id>.json` is added here; `pack.mcmeta` is created only if missing |
+| Datapacks folder + archive name | `<folder>/<name>.zip` gets `data/<namespace>/trim_pattern/<id>.json`; `pack.mcmeta` is added only if missing |
 | Minecraft version | 1.21.2 – 26.2: sets the pack format and adds `template_item` for 1.21.2 – 1.21.4 |
 | Decal | draw the trim only over armor pixels |
 | Names | `language=name` lines written to `assets/minecraft/lang/<language>.json` of the resource pack as `trim_pattern.<namespace>.<id>` |
-| Build zip | `<folder>.zip` inside the datapack folder with `pack.mcmeta`, `pack.png` and `data/` |
 
 The pattern gets no smithing template, so it can only be applied by commands or plugins. The result dialog
 (and **Trim → How to use a trim in game**) shows what to do next:
 
-1. Put the datapack into `world/datapacks` and **restart** the server — `/reload` does not add new trim patterns.
+1. Put the datapack zip into `world/datapacks` (or let the generator write it there) and **restart** the server —
+   `/reload` does not add new trim patterns.
 2. Give a trimmed item with a command:
 
    ```mcfunction
@@ -174,7 +187,7 @@ skin and flat-colored reference armor.
 ## 🛠 Usage
 
 1. **File → New → Armor Trim** (or **Trim → New trim**). Start empty or from a vanilla pattern.
-   To edit an existing trim use **Trim → Open trim from resource pack**.
+   To edit an existing trim use **Trim → Open trim from resource pack** (a folder or a zip).
 2. Paint in the 3D view or on the `humanoid` / `humanoid_leggings` textures in the 2D editor. Use the palette
    panel for material-colored pixels. Right-click an armor piece in the *View* tab to show only that piece —
    useful for leggings, which sit under the chestplate and boots.
