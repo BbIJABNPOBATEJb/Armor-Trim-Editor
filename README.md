@@ -22,7 +22,7 @@ template icon and export everything into your resource pack in one click.
 - 🤸 **20 poses and animations** ported from the game's `HumanoidModel`: walking, sprinting, sneaking, riding,
   attack, bow, crossbow, shield, trident, spyglass, swimming, elytra, T-pose and more, plus two poses with the body
   parts pulled apart and head yaw/pitch sliders.
-- 🧍 **Skins**: all 9 default skins (wide and slim), any PNG file (legacy 64×32 skins are converted) or a
+- 👤 **Skins**: all 9 default skins (wide and slim), any PNG file (legacy 64×32 skins are converted) or a
   player name.
 - 🏷 **Icon generator** for the smithing template item: recolor a vanilla template (or your own icon) with a
   body and glyph color, or sample the colors from the trim.
@@ -154,9 +154,9 @@ A trim is drawn on the same model as the armor piece it sits on, on top of it:
 | `humanoid_leggings` | 16, 16 | body (waist) | 0.5 | leggings |
 | `humanoid_leggings` | 0, 16 | legs | 0.4 | leggings |
 
-- 🪖 **Two helmet layers.** The left half of the top row is the helmet itself; the right half is an outer layer
+- ⛑️ **Two helmet layers.** The left half of the top row is the helmet itself; the right half is an outer layer
   that floats 0.5 px above it. Toggle them separately in the *View* tab.
-- 🪞 **Left and right limbs share one area**, mirrored, so they cannot differ.
+- ↔️ **Left and right limbs share one area**, mirrored, so they cannot differ.
 - 🎨 **Palette.** Only the eight grays above are recolored. A material that matches the armor (gold trim on gold
   armor) uses its `_darker` palette.
 - 🔲 **Transparency.** Trims render as cutout: alpha below 10% disappears, anything else becomes fully opaque.
