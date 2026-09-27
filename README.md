@@ -16,7 +16,8 @@ template icon and export everything into your resource pack in one click.
 - 🖌 **Paint only the trim.** Skin and reference armor are locked, so the brush always lands on the trim texture.
 - 🌈 **Live material preview**: quartz, iron, netherite, redstone, copper, gold, emerald, diamond, lapis, amethyst
   and resin, including the `_darker` palettes used when the trim matches the armor (gold on gold, etc.).
-- 🔍 **Palette highlight**: shows which pixels follow the trim material and which keep a fixed color.
+- 🔍 **Palette highlight**: shows which pixels follow the trim material and which keep a fixed color; a **Decal**
+  switch previews how a `"decal": true` pattern is clipped to the armor.
 - 🛡 **Reference armor** under the trim: leather (with dye color), chainmail, iron, copper, gold, diamond,
   netherite, turtle shell or none.
 - 🤸 **20 poses and animations** ported from the game's `HumanoidModel`: walking, sprinting, sneaking, riding,
@@ -111,7 +112,7 @@ trims:
 |---|---|
 | Datapacks folder + archive name | `<folder>/<name>.zip` gets `data/<namespace>/trim_pattern/<id>.json`; `pack.mcmeta` is added only if missing |
 | Minecraft version | 1.21.2 – 26.2: sets the pack format and adds `template_item` for 1.21.2 – 1.21.4 |
-| Decal | draw the trim only over armor pixels |
+| Decal | draw the trim only over armor pixels (the game uses an *equal* depth test, so pixels over transparent armor — including the outer helmet layer of every vanilla armor — disappear). The **Decal** switch in the *View* tab previews it |
 | Names | `language=name` lines written to `assets/minecraft/lang/<language>.json` of the resource pack as `trim_pattern.<namespace>.<id>` |
 
 The pattern gets no smithing template, so it can only be applied by commands or plugins. The result dialog

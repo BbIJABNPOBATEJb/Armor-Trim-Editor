@@ -964,8 +964,9 @@ function applyVisibility() {
 // Material preview: palette swap inside the texture shader
 // ============================================================================
 
-const SHADER_UNIFORMS = 'uniform int TRIM_MODE;\nuniform vec3 TRIM_KEYS[8];\nuniform vec3 TRIM_VALS[8];\n';
+const SHADER_UNIFORMS = 'uniform int TRIM_MODE;\nuniform vec3 TRIM_KEYS[8];\nuniform vec3 TRIM_VALS[8];\nuniform int TRIM_DECAL;\nuniform sampler2D TRIM_ARMOR_MAP;\n';
 const SHADER_CODE = `
+	if (TRIM_DECAL == 1 && texture2D(TRIM_ARMOR_MAP, vUv).a < 0.1) discard;
 	if (TRIM_MODE > 0 && color.a > 0.0) {
 		int trim_hit = -1;
 		for (int ti = 0; ti < 8; ti++) {
@@ -997,6 +998,8 @@ function patchMaterial(texture) {
 	material.uniforms.TRIM_MODE = {value: 0};
 	material.uniforms.TRIM_KEYS = {value: PALETTE_KEY.map(hex => new THREE.Vector3(...hexToRgb(hex).map(v => v / 255)))};
 	material.uniforms.TRIM_VALS = {value: PALETTE_KEY.map(hex => new THREE.Vector3(...hexToRgb(hex).map(v => v / 255)))};
+	material.uniforms.TRIM_DECAL = {value: 0};
+	material.uniforms.TRIM_ARMOR_MAP = {value: null};
 	material.fragmentShader = material.fragmentShader
 		.replace(/void\s+main\s*\(\s*(void)?\s*\)\s*\{/, (m) => SHADER_UNIFORMS + m)
 		.replace(COLOR_LINE, (m) => m + SHADER_CODE);
@@ -1010,7 +1013,15 @@ function unpatchMaterial(texture) {
 	delete material.uniforms.TRIM_MODE;
 	delete material.uniforms.TRIM_KEYS;
 	delete material.uniforms.TRIM_VALS;
+	delete material.uniforms.TRIM_DECAL;
+	delete material.uniforms.TRIM_ARMOR_MAP;
 	material.needsUpdate = true;
+}
+function armorMapFor(trim_texture) {
+	// Trim and reference armor share the UV layout, so the armor texel at the same UV tells whether armor is there
+	let armor = findTexture(trim_texture.trim_role == 'trim_leggings' ? 'armor_leggings' : 'armor_humanoid');
+	let material = armor && armor.getOwnMaterial && armor.getOwnMaterial();
+	return material ? material.map : null;
 }
 function effectivePaletteId(material_id, armor_id) {
 	let def = TRIM_MATERIALS.find(m => m.id == material_id);
@@ -1023,10 +1034,14 @@ function updatePreviewUniforms() {
 	let palette_id = data.preview.material != 'none' ? effectivePaletteId(data.preview.material, data.armor.material) : null;
 	let palette = palette_id && PALETTES[palette_id];
 	let mode = (palette ? 1 : 0) + (data.preview.highlight ? 2 : 0);
+	// Without reference armor there is nothing to clip against, so the decal preview stays off
+	let decal = !!data.datapack.decal && data.armor.material != 'none';
 	for (let texture of trimTextures()) {
 		if (!patchMaterial(texture)) continue;
 		let uniforms = texture.getOwnMaterial().uniforms;
 		uniforms.TRIM_MODE.value = mode;
+		uniforms.TRIM_DECAL.value = decal ? 1 : 0;
+		uniforms.TRIM_ARMOR_MAP.value = armorMapFor(texture);
 		if (palette) {
 			palette.forEach((hex, i) => uniforms.TRIM_VALS.value[i].set(...hexToRgb(hex).map(v => v / 255)));
 		}
@@ -2346,6 +2361,8 @@ async function openDatapackDialog() {
 		},
 		onConfirm(result) {
 			Object.assign(d, {dir: result.dir, name: zipFileName(result.name) || result.name, decal: result.decal, names: result.names});
+			updatePreviewUniforms();
+			refreshPanels();
 			data.mc_version = result.version;
 			runDatapackExport();
 		},
@@ -2769,6 +2786,7 @@ function createPanels() {
 				setArmor() { refreshArmor(); },
 				setMaterial(id) { this.d.preview.material = id; updatePreviewUniforms(); },
 				toggleHighlight() { this.d.preview.highlight = !this.d.preview.highlight; updatePreviewUniforms(); },
+				toggleDecal() { this.d.datapack.decal = !this.d.datapack.decal; updatePreviewUniforms(); },
 				setPose(id) {
 					this.d.pose.id = id;
 					PoseRuntime.ticks = 0;
@@ -2845,6 +2863,7 @@ function createPanels() {
 						</div>
 						<div class="te_chips">
 							<div class="te_chip small" :class="{on: d.preview.highlight}" @click="toggleHighlight()" title="${t('pink_follow_the_material_cyan_keep_their')}">${t('highlight_palette')}</div>
+							<div class="te_chip small" :class="{on: d.datapack.decal}" @click="toggleDecal()" title="${t('decal_preview_desc')}">Decal</div>
 						</div>
 					</template>
 
@@ -3213,7 +3232,7 @@ function onFrame() {
 		// Materials get rebuilt when textures reload; re-apply the preview patch
 		for (let texture of trimTextures()) {
 			let mat = texture.getOwnMaterial && texture.getOwnMaterial();
-			if (mat && mat.uniforms && !mat.uniforms.TRIM_MODE) {
+			if (mat && mat.uniforms && (!mat.uniforms.TRIM_MODE || mat.uniforms.TRIM_ARMOR_MAP.value !== armorMapFor(texture))) {
 				updatePreviewUniforms();
 				break;
 			}
@@ -3530,7 +3549,7 @@ function getTranslations() {
 			dp_title: "Trim pattern datapack",
 			dp_pattern_info: "Pattern **%0**. The trim ID and namespace come from the export settings.",
 			dp_version: "Minecraft version",
-			dp_decal_desc: "Draw the trim only over armor pixels.",
+			dp_decal_desc: "Draw the trim only over armor pixels. Preview it with the Decal switch in the View tab.",
 			dp_names: "Names",
 			dp_names_desc: "One per line: language=name, e.g. en_us=Clouds. Written to assets/minecraft/lang/<language>.json of the resource pack as trim_pattern.%0.",
 			dp_will_be_written: "Will be written (♻ overwrite, ✎ modify, · unchanged):",
@@ -3575,6 +3594,7 @@ function getTranslations() {
 			folder_or_zip: "Folder or .zip",
 			pose_spread: "Standing, parts apart",
 			pose_tpose_spread: "T-pose, parts apart",
+			decal_preview_desc: "Preview of \"decal\": true — trim pixels are only drawn over armor pixels, so the outer helmet layer and holes in the armor stay empty. The same setting goes into the datapack.",
 		},
 		ru: {
 			quartz: "Кварц",
@@ -3823,7 +3843,7 @@ function getTranslations() {
 			dp_title: "Датапак паттерна отделки",
 			dp_pattern_info: "Паттерн **%0**. ID отделки и namespace берутся из настроек экспорта.",
 			dp_version: "Версия Minecraft",
-			dp_decal_desc: "Рисовать отделку только поверх пикселей брони.",
+			dp_decal_desc: "Рисовать отделку только поверх пикселей брони. Посмотреть результат — переключатель Decal во вкладке «Вид».",
 			dp_names: "Названия",
 			dp_names_desc: "По одному в строке: язык=название, например ru_ru=Облака. Записываются в assets/minecraft/lang/<язык>.json ресурспака как trim_pattern.%0.",
 			dp_will_be_written: "Будут записаны (♻ — перезапись, ✎ — изменение, · — без изменений):",
@@ -3868,6 +3888,7 @@ function getTranslations() {
 			folder_or_zip: "Папка или .zip",
 			pose_spread: "Стойка, части раздвинуты",
 			pose_tpose_spread: "T-поза, части раздвинуты",
+			decal_preview_desc: "Превью «decal»: true — пиксели отделки рисуются только поверх пикселей брони, поэтому внешний слой шлема и дыры в броне остаются пустыми. Эта же настройка пишется в датапак.",
 		},
 	};
 }
