@@ -2811,12 +2811,13 @@ function createPanels() {
 				},
 			},
 			template: `
-				<div class="te_panel_wrap"><div class="te_panel" v-if="d">
+				<div class="te_panel_wrap"><div class="te_panel te_tabbed" v-if="d">
 					<div class="te_tabs">
 						<div :class="{on: tab == 'view'}" @click="tab = 'view'"><i class="material-icons">visibility</i>${t('view')}</div>
 						<div :class="{on: tab == 'pose'}" @click="tab = 'pose'"><i class="material-icons">accessibility_new</i>${t('pose')}</div>
 						<div :class="{on: tab == 'skin'}" @click="tab = 'skin'"><i class="material-icons">face</i>${t('skin')}</div>
 					</div>
+					<div class="te_tab_body">
 
 					<template v-if="tab == 'view'">
 						<div class="te_label">${t('armor_pieces')}<span class="te_hint_inline">${t('right_click_solo')}</span></div>
@@ -2891,6 +2892,7 @@ function createPanels() {
 						</div>
 						<div class="te_hint">${t('armor_uses_the_same_wide_arms_for_slim')}</div>
 					</template>
+					</div>
 				</div></div>`,
 		},
 	}));
@@ -2964,8 +2966,15 @@ function createPanels() {
 }
 
 const CSS = `
-.te_panel { padding: 2px 8px 8px; font-size: 14px; }
-.te_tabs { display: flex; gap: 2px; margin: 2px 0 6px; border-bottom: 1px solid var(--color-border); }
+/* Panels scroll inside their own height, so small screens still reach every control */
+.te_panel_wrap { display: flex; flex-direction: column; flex-grow: 1; height: 100%; min-height: 0; overflow: hidden; }
+.te_panel { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 2px 8px 8px; font-size: 14px; }
+.te_panel.te_tabbed { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.te_tab_body { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; padding-bottom: 8px; }
+/* As a tab of another panel Blockbench forces the host's height; let the panel shrink to the space it really has */
+#panel_armor_trim_editor_view.attached, #panel_armor_trim_editor_tools.attached { min-height: 0; flex: 1 1 0; }
+#panel_armor_trim_editor_view.attached.grow, #panel_armor_trim_editor_tools.attached.grow { height: auto; }
+.te_tabs { flex-shrink: 0; display: flex; gap: 2px; margin: 2px 0 6px; border-bottom: 1px solid var(--color-border); }
 .te_tabs > div { flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 4px 2px; cursor: pointer; color: var(--color-subtle_text); border-bottom: 2px solid transparent; }
 .te_tabs > div i { font-size: 18px; }
 .te_tabs > div.on { color: var(--color-light); border-bottom-color: var(--color-accent); }
