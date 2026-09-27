@@ -31,6 +31,8 @@ template icon and export everything into your resource pack in one click.
   `atlases/armor_trims.json` (keeps the file's indentation and path style, and adds missing vanilla palettes such as
   `copper_darker`).
 - 📂 **Import** any trim from a resource pack to keep editing it; HD trims (128×64 and up) are supported.
+- 🧬 **Datapack generator**: the `trim_pattern` file for Minecraft 1.21.2 – 26.2, pattern names in the resource
+  pack's lang files and a ready-to-upload zip, plus a short guide with a `/give` command and Paper code.
 - 🌍 English and Russian interface.
 
 ## 🌈 Material preview
@@ -80,10 +82,50 @@ The texture namespace, icon paths (`{id}` is replaced with the trim ID) and mode
 every setting is remembered. Overwritten files are backed up to the Blockbench data folder. After the first
 export, **Quick export** (`Ctrl + Alt + E`) repeats it without the dialog.
 
-The result dialog can copy an item model entry (for a `range_dispatch` on `custom_model_data`) and a
-`trim_pattern` JSON for your datapack. The plugin does not touch item definitions or datapacks by itself.
+The result dialog can copy an item model entry (for a `range_dispatch` on `custom_model_data`). Item
+definitions are never edited by the plugin.
 
 <p align="center"><img src="docs/import.png" alt="Import dialog" width="50%"></p>
+
+## 🧬 Datapack
+
+A new trim pattern also has to exist on the server. **Datapack** writes it into a datapack folder — an existing
+one or a new one:
+
+<p align="center"><img src="docs/datapack.png" alt="Datapack dialog and in-game guide" width="100%"></p>
+
+| Setting | What it does |
+|---|---|
+| Datapack folder | `data/<namespace>/trim_pattern/<id>.json` is added here; `pack.mcmeta` is created only if missing |
+| Minecraft version | 1.21.2 – 26.2: sets the pack format and adds `template_item` for 1.21.2 – 1.21.4 |
+| Decal | draw the trim only over armor pixels |
+| Names | `language=name` lines written to `assets/minecraft/lang/<language>.json` of the resource pack as `trim_pattern.<namespace>.<id>` |
+| Build zip | `<folder>.zip` inside the datapack folder with `pack.mcmeta`, `pack.png` and `data/` |
+
+The pattern gets no smithing template, so it can only be applied by commands or plugins. The result dialog
+(and **Trim → How to use a trim in game**) shows what to do next:
+
+1. Put the datapack into `world/datapacks` and **restart** the server — `/reload` does not add new trim patterns.
+2. Give a trimmed item with a command:
+
+   ```mcfunction
+   /give @s minecraft:diamond_chestplate[minecraft:trim={material:"minecraft:redstone",pattern:"minecraft:tides"}]
+   ```
+
+3. Or apply it from a Bukkit/Paper plugin:
+
+   ```java
+   TrimPattern pattern = RegistryAccess.registryAccess()
+           .getRegistry(RegistryKey.TRIM_PATTERN)
+           .get(NamespacedKey.minecraft("tides"));
+   if (pattern != null) {
+       ArmorTrim trim = new ArmorTrim(TrimMaterial.REDSTONE, pattern);
+       item.editMeta(ArmorMeta.class, meta -> meta.setTrim(trim));
+   }
+   ```
+
+The material only recolors the eight palette grays, so a trim painted in its own colors looks the same with any
+material. Both snippets are generated for the current trim and can be copied from the dialog.
 
 ## 🧩 How armor trims work
 
@@ -106,7 +148,8 @@ A trim is drawn on the same model as the armor piece it sits on, on top of it:
   armor) uses its `_darker` palette.
 - 🔲 **Transparency.** Trims render as cutout: alpha below 10% disappears, anything else becomes fully opaque.
 - 🖥 **Server side.** The pattern itself is registered by a datapack (`data/<namespace>/trim_pattern/<id>.json`
-  with `asset_id` = `<namespace>:<id>`). `"decal": true` draws the trim only over armor pixels.
+  with `asset_id` = `<namespace>:<id>`), see [Datapack](#-datapack).
+- 🗂 **Versions.** The resource pack layout used here (`trims/entity/humanoid`) exists since 1.21.2.
 
 ## 🚀 Installation
 
@@ -138,6 +181,7 @@ skin and flat-colored reference armor.
 3. Check the result with different materials, armor, poses and skins.
 4. Make the template icon with **Icon**.
 5. **Export**, then press `F3 + T` in game.
+6. **Datapack** once per new trim, then restart the server and give the trim with `/give` or your plugin.
 
 The `.bbmodel` file keeps everything — textures, preview settings and export settings.
 

@@ -9,6 +9,7 @@ Paint Minecraft: Java Edition armor trims on the exact armor model the game uses
 3. Use the **Trim: preview** panel to show or hide armor pieces and layers, switch the reference armor and trim material, pose the player and change the skin. Right-click a piece to show only that piece.
 4. Click **Icon** to generate the smithing template icon from a vanilla template.
 5. Click **Export**, choose your resource pack and press `F3 + T` in game. After the first export, **Quick export** (`Ctrl + Alt + E`) repeats it.
+6. Click **Datapack** to add the trim pattern to your server's datapack (Minecraft 1.21.2 – 26.2). **Trim → How to use a trim in game** shows the `/give` command and Bukkit/Paper code for it.
 
 ## Notes
 

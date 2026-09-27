@@ -512,10 +512,11 @@ const Assets = {
 // Project data
 // ============================================================================
 
+const DATA_VERSION = 2;
 function defaultData() {
 	let prefs = Prefs.get();
 	return {
-		version: 1,
+		version: DATA_VERSION,
 		trim_id: 'new_trim',
 		resolution: 1,
 		view: {
@@ -540,6 +541,7 @@ function defaultData() {
 			backup: true,
 		},
 		icon_gen: {base: 'sentry', body: '#6a3fb0', accent: '#4bc9c9', glyph: 'recolor', contrast: 1},
+		datapack: {path: prefs.datapack_path || '', version: prefs.datapack_version || DEFAULT_DATAPACK_VERSION, decal: false, zip: true, names: ''},
 	};
 }
 function isTrimProject(project = Project) {
@@ -547,8 +549,11 @@ function isTrimProject(project = Project) {
 }
 function D() {
 	if (!isTrimProject()) return null;
-	if (!Project.armor_trim_editor || !Project.armor_trim_editor.view) {
-		Project.armor_trim_editor = deepDefaults(Project.armor_trim_editor || {}, defaultData());
+	let data = Project.armor_trim_editor;
+	if (!data || !data.view || !(data.version >= DATA_VERSION)) {
+		// Fill settings added in newer versions without touching existing ones
+		Project.armor_trim_editor = deepDefaults(data || {}, defaultData());
+		Project.armor_trim_editor.version = DATA_VERSION;
 	}
 	return Project.armor_trim_editor;
 }
@@ -1808,13 +1813,6 @@ async function runExport(quiet = false) {
 function itemSnippet(plan) {
 	return JSON.stringify({threshold: 0, model: {type: 'minecraft:model', model: plan.icon_model_id}}, null, 4);
 }
-function datapackSnippet(plan) {
-	return JSON.stringify({
-		asset_id: `${plan.ns}:${plan.id}`,
-		description: {translate: `trim_pattern.${plan.ns}.${plan.id}`},
-		decal: false,
-	}, null, 4);
-}
 function showExportResult(plan, written, atlas_changes) {
 	let rel = (p) => escapeHTML(PathModule.relative(plan.pack, p).replace(/\\/g, '/'));
 	let html = `<p>${t('files_written')}: <b>${written.length}</b></p><ul class="te_list">${written.map(p => `<li>${rel(p)}</li>`).join('')}</ul>`;
@@ -1826,7 +1824,7 @@ function showExportResult(plan, written, atlas_changes) {
 		title: t('trim_exported'),
 		width: 560,
 		component: {template: `<div class="te_dialog_html">${html}</div>`},
-		buttons: [t('copy_items_entry'), t('copy_trim_pattern'), t('open_folder'), t('done')],
+		buttons: [t('copy_items_entry'), t('datapack'), t('open_folder'), t('done')],
 		cancelIndex: 3,
 		confirmIndex: 3,
 		onButton(index) {
@@ -1836,9 +1834,8 @@ function showExportResult(plan, written, atlas_changes) {
 				return false;
 			}
 			if (index == 1) {
-				Clipbench.setText(datapackSnippet(plan));
-				notify(t('copied_data_trim_pattern_json'));
-				return false;
+				setTimeout(openDatapackDialog, 50);
+				return;
 			}
 			if (index == 2) {
 				revealInFolder(plan.files[0].path);
@@ -1927,6 +1924,336 @@ function quickExport() {
 		return;
 	}
 	runExport(true);
+}
+
+// ============================================================================
+// Datapack generator
+// ============================================================================
+
+// Versions whose resource pack layout matches what the plugin exports (1.21.2+)
+const DATAPACK_VERSIONS = [
+	{id: '26.2', name: '26.2', format: 107, new_meta: true},
+	{id: '26.1.2', name: '26.1.2', format: 101, new_meta: true},
+	{id: '1.21.11', name: '1.21.11', format: 94, new_meta: true},
+	{id: '1.21.9', name: '1.21.9 – 1.21.10', format: 88, new_meta: true},
+	{id: '1.21.7', name: '1.21.7 – 1.21.8', format: 81},
+	{id: '1.21.6', name: '1.21.6', format: 80},
+	{id: '1.21.5', name: '1.21.5', format: 71},
+	{id: '1.21.4', name: '1.21.4', format: 61, template_item: true},
+	{id: '1.21.2', name: '1.21.2 – 1.21.3', format: 57, template_item: true},
+];
+const DEFAULT_DATAPACK_VERSION = '1.21.11';
+const LANG_CODE = /^[a-z]{2,3}_[a-z]{2,4}$/;
+
+function datapackVersion(id) {
+	return DATAPACK_VERSIONS.find(v => v.id == id) || DATAPACK_VERSIONS.find(v => v.id == DEFAULT_DATAPACK_VERSION);
+}
+function patternKey(data) {
+	return (data.export.namespace || 'minecraft') + ':' + data.trim_id;
+}
+function titleCase(id) {
+	return id.split(/[_\-.]+/).filter(Boolean).map(w => w[0].toUpperCase() + w.substring(1)).join(' ');
+}
+function readJSONFile(path) {
+	let text = getFS().readFileSync(path, 'utf-8').replace(/^﻿/, '');
+	return {text, json: JSON.parse(text)};
+}
+function parseNames(text) {
+	let names = [], skipped = [];
+	for (let line of String(text || '').split(/\r?\n/)) {
+		line = line.trim();
+		if (!line) continue;
+		let i = line.indexOf('=');
+		let code = i > 0 ? line.substring(0, i).trim().toLowerCase() : '';
+		let name = i > 0 ? line.substring(i + 1).trim() : '';
+		if (!LANG_CODE.test(code)) {
+			skipped.push(line);
+		} else if (name) {
+			names.push({code, name});
+		}
+	}
+	return {names, skipped};
+}
+function langNamesFromPack(data) {
+	// Existing names of this pattern in the resource pack, as "code=name" lines
+	let pack = data.export.pack_path;
+	let key = `trim_pattern.${data.export.namespace || 'minecraft'}.${data.trim_id}`;
+	let lines = [];
+	if (pack) {
+		let dir = PathModule.join(pack, 'assets', 'minecraft', 'lang');
+		for (let file of readDir(dir)) {
+			if (!file.endsWith('.json')) continue;
+			try {
+				let {json} = readJSONFile(PathModule.join(dir, file));
+				if (typeof json[key] == 'string') lines.push(file.replace('.json', '') + '=' + json[key]);
+			} catch (err) {}
+		}
+	}
+	if (!lines.some(l => l.startsWith('en_us='))) lines.unshift('en_us=' + titleCase(data.trim_id));
+	if (Language.code == 'ru' && !lines.some(l => l.startsWith('ru_ru='))) lines.push('ru_ru=');
+	return lines.join('\n');
+}
+
+function datapackPlan(data) {
+	let P = PathModule;
+	let d = data.datapack;
+	let ns = data.export.namespace || 'minecraft';
+	let id = data.trim_id;
+	let version = datapackVersion(d.version);
+	let plan = {dir: d.path, ns, id, version, key: ns + ':' + id, lang: [], skipped: []};
+	plan.mcmeta = P.join(d.path, 'pack.mcmeta');
+	plan.pattern_file = P.join(d.path, 'data', ns, 'trim_pattern', id + '.json');
+	plan.pattern = {
+		asset_id: ns + ':' + id,
+		description: {translate: `trim_pattern.${ns}.${id}`},
+		decal: !!d.decal,
+	};
+	// Before 1.21.5 a pattern needs a template item; structure_void cannot be obtained in survival
+	if (version.template_item) plan.pattern.template_item = 'minecraft:structure_void';
+	plan.zip = d.zip && d.path ? P.join(d.path, P.basename(d.path) + '.zip') : null;
+	let {names, skipped} = parseNames(d.names);
+	plan.skipped = skipped;
+	if (names.length && data.export.pack_path) {
+		for (let entry of names) {
+			let rel = `assets/minecraft/lang/${entry.code}.json`;
+			plan.lang.push(Object.assign({rel, path: P.join(data.export.pack_path, ...rel.split('/'))}, entry));
+		}
+	}
+	plan.names_without_pack = names.length > 0 && !data.export.pack_path;
+	return plan;
+}
+function datapackErrors(data, plan) {
+	let errors = [];
+	let id_error = trimIdError(data.trim_id);
+	if (id_error) errors.push(id_error);
+	if (!plan.dir) errors.push(t('dp_no_folder'));
+	else if (pathExists(plan.dir) && !isDirectory(plan.dir)) errors.push(t('dp_not_folder') + plan.dir);
+	return errors;
+}
+function describeDatapackPlan(plan) {
+	let rel = (base, p) => PathModule.relative(base, p).replace(/\\/g, '/');
+	let lines = [];
+	lines.push((pathExists(plan.mcmeta) ? '· ' : '＋ ') + 'pack.mcmeta');
+	lines.push((pathExists(plan.pattern_file) ? '♻ ' : '＋ ') + rel(plan.dir, plan.pattern_file));
+	if (plan.zip) lines.push((pathExists(plan.zip) ? '♻ ' : '＋ ') + rel(plan.dir, plan.zip));
+	let key = `trim_pattern.${plan.ns}.${plan.id}`;
+	for (let entry of plan.lang) {
+		let mark = '＋ ';
+		if (pathExists(entry.path)) {
+			let current;
+			try { current = readJSONFile(entry.path).json[key]; } catch (err) {}
+			mark = current === entry.name ? '· ' : '✎ ';
+		}
+		lines.push(mark + t('dp_rp') + entry.rel + ` — ${entry.name}`);
+	}
+	return lines;
+}
+function mcmetaText(version) {
+	let pack = {description: 'Armor trims'};
+	if (version.new_meta) {
+		pack.min_format = version.format;
+		pack.max_format = version.format;
+	} else {
+		pack.pack_format = version.format;
+	}
+	return JSON.stringify({pack}, null, '\t') + '\n';
+}
+function mcmetaFormat(json) {
+	let pack = json && json.pack || {};
+	let value = pack.max_format ?? pack.pack_format ?? pack.min_format;
+	return Array.isArray(value) ? value[0] : value;
+}
+function listFiles(dir, base = dir) {
+	let out = [];
+	for (let name of readDir(dir)) {
+		let path = PathModule.join(dir, name);
+		if (isDirectory(path)) out.push(...listFiles(path, base));
+		else out.push(PathModule.relative(base, path).replace(/\\/g, '/'));
+	}
+	return out;
+}
+async function buildDatapackZip(plan) {
+	let fs = getFS();
+	let zip = new JSZip();
+	for (let file of ['pack.mcmeta', 'pack.png']) {
+		let path = PathModule.join(plan.dir, file);
+		if (fs.existsSync(path)) zip.file(file, fs.readFileSync(path));
+	}
+	for (let rel of listFiles(PathModule.join(plan.dir, 'data'))) {
+		zip.file('data/' + rel, fs.readFileSync(PathModule.join(plan.dir, 'data', rel)));
+	}
+	let content = await zip.generateAsync({type: 'uint8array', compression: 'DEFLATE'});
+	fs.writeFileSync(plan.zip, Buffer.from(content));
+}
+async function runDatapackExport() {
+	let data = D();
+	if (!data) return;
+	let plan = datapackPlan(data);
+	let errors = datapackErrors(data, plan);
+	if (errors.length) {
+		Blockbench.showMessageBox({title: t('dp_title'), icon: 'error', message: errors.map(escapeHTML).join('<br>')});
+		return;
+	}
+	let fs = getFS();
+	let stamp = new Date().toISOString().replace(/[:.]/g, '-');
+	let written = [], notes = [];
+	try {
+		ensureDir(plan.dir);
+		if (!fs.existsSync(plan.mcmeta)) {
+			fs.writeFileSync(plan.mcmeta, mcmetaText(plan.version));
+			written.push('pack.mcmeta');
+		} else {
+			let format;
+			try { format = mcmetaFormat(readJSONFile(plan.mcmeta).json); } catch (err) {}
+			if (format != plan.version.format) notes.push(t('dp_format_mismatch', [String(format), plan.version.name, plan.version.format]));
+		}
+		if (data.export.backup) backupFile(plan.pattern_file, plan.dir, stamp);
+		ensureDir(PathModule.dirname(plan.pattern_file));
+		fs.writeFileSync(plan.pattern_file, JSON.stringify(plan.pattern, null, 2) + '\n');
+		written.push(`data/${plan.ns}/trim_pattern/${plan.id}.json`);
+
+		let key = `trim_pattern.${plan.ns}.${plan.id}`;
+		for (let entry of plan.lang) {
+			let text = '', json = {};
+			if (fs.existsSync(entry.path)) ({text, json} = readJSONFile(entry.path));
+			if (json[key] === entry.name) continue;
+			json[key] = entry.name;
+			if (data.export.backup) backupFile(entry.path, data.export.pack_path, stamp);
+			ensureDir(PathModule.dirname(entry.path));
+			fs.writeFileSync(entry.path, JSON.stringify(json, null, detectIndent(text)) + (text.endsWith('\n') || !text ? '\n' : ''));
+			written.push(t('dp_rp') + entry.rel);
+		}
+		if (plan.names_without_pack) notes.push(t('dp_names_need_pack'));
+		for (let line of plan.skipped) notes.push(t('dp_bad_name_line', [line]));
+
+		if (plan.zip) {
+			await buildDatapackZip(plan);
+			written.push(PathModule.basename(plan.zip));
+		}
+		Prefs.set({datapack_path: data.datapack.path, datapack_version: data.datapack.version});
+		showDatapackResult(plan, written, notes);
+	} catch (err) {
+		showError(t('dp_title'), err);
+	}
+}
+function openDatapackDialog() {
+	let data = D();
+	if (!data) return;
+	let d = data.datapack;
+	if (!d.names) d.names = langNamesFromPack(data);
+	let versions = {};
+	for (let v of DATAPACK_VERSIONS) versions[v.id] = v.name;
+	let dialog = new Dialog({
+		id: 'armor_trim_editor_datapack',
+		title: t('dp_title'),
+		width: 640,
+		form: {
+			_pattern: {type: 'info', text: t('dp_pattern_info', [patternKey(data)])},
+			path: {label: t('dp_folder'), type: 'folder', value: d.path, description: t('dp_folder_desc')},
+			version: {label: t('dp_version'), type: 'select', options: versions, value: datapackVersion(d.version).id},
+			decal: {label: 'Decal', type: 'checkbox', value: d.decal, description: t('dp_decal_desc')},
+			names: {label: t('dp_names'), type: 'textarea', height: 64, value: d.names,
+				description: t('dp_names_desc', [`${data.export.namespace || 'minecraft'}.${data.trim_id}`])},
+			zip: {label: t('dp_zip'), type: 'checkbox', value: d.zip, description: t('dp_zip_desc')},
+		},
+		onFormChange(result) {
+			let tmp = JSON.parse(JSON.stringify(data));
+			Object.assign(tmp.datapack, result);
+			let plan = datapackPlan(tmp);
+			let errors = datapackErrors(tmp, plan);
+			let html = errors.length ? `<div class="te_error">${errors.map(escapeHTML).join('<br>')}</div>`
+				: `<div class="te_plan_list">${describeDatapackPlan(plan).map(escapeHTML).join('<br>')}</div>`;
+			if (!errors.length && plan.names_without_pack) html += `<div class="te_hint">${t('dp_names_need_pack')}</div>`;
+			let holder = this.object && this.object.querySelector('#te_datapack_plan');
+			if (!holder && this.object) {
+				holder = document.createElement('div');
+				holder.id = 'te_datapack_plan';
+				holder.className = 'te_export_plan';
+				this.object.querySelector('.dialog_content').appendChild(holder);
+			}
+			if (holder) holder.innerHTML = `<div class="te_hint">${t('dp_will_be_written')}</div>` + html;
+		},
+		onConfirm(result) {
+			Object.assign(d, {path: result.path, version: result.version, decal: result.decal, names: result.names, zip: result.zip});
+			runDatapackExport();
+		},
+	});
+	dialog.show();
+	setTimeout(() => dialog.onFormChange && dialog.onFormChange(dialog.getFormResult()), 50);
+}
+
+function giveCommand(key) {
+	return `/give @s minecraft:diamond_chestplate[minecraft:trim={material:"minecraft:redstone",pattern:"${key}"}]`;
+}
+function paperCode(key) {
+	let p = parseResourceId(key);
+	let namespaced = p.ns == 'minecraft' ? `NamespacedKey.minecraft("${p.path}")` : `NamespacedKey.fromString("${p.ns}:${p.path}")`;
+	return [
+		'TrimPattern pattern = RegistryAccess.registryAccess()',
+		'        .getRegistry(RegistryKey.TRIM_PATTERN)',
+		`        .get(${namespaced});`,
+		'if (pattern != null) {',
+		'    ArmorTrim trim = new ArmorTrim(TrimMaterial.REDSTONE, pattern);',
+		'    item.editMeta(ArmorMeta.class, meta -> meta.setTrim(trim));',
+		'}',
+	].join('\n');
+}
+function gameGuideHTML(key) {
+	return `
+		<h3>${t('guide_server_h')}</h3>
+		<ol class="te_guide">
+			<li>${t('guide_server_1')}</li>
+			<li>${t('guide_server_2')}</li>
+			<li>${t('guide_server_3')}</li>
+		</ol>
+		<h3>${t('guide_give_h')}</h3>
+		<pre class="te_code">${escapeHTML(giveCommand(key))}</pre>
+		<p class="te_hint">${t('guide_material')} ${t('guide_smithing')}</p>
+		<h3>${t('guide_plugin_h')}</h3>
+		<pre class="te_code">${escapeHTML(paperCode(key))}</pre>
+		<p class="te_hint">${t('guide_plugin_note')}</p>`;
+}
+function guideButtons(key) {
+	return {
+		buttons: [t('copy_give'), t('copy_code'), t('done')],
+		onButton(index) {
+			if (index == 0) {
+				Clipbench.setText(giveCommand(key));
+				notify(t('copied'));
+				return false;
+			}
+			if (index == 1) {
+				Clipbench.setText(paperCode(key));
+				notify(t('copied'));
+				return false;
+			}
+		},
+	};
+}
+function showDatapackResult(plan, written, notes) {
+	let html = `<p>${t('files_written')}: <b>${written.length}</b></p><ul class="te_list">${written.map(p => `<li>${escapeHTML(p)}</li>`).join('')}</ul>`;
+	for (let note of notes) html += `<p class="te_warn_text">${escapeHTML(note)}</p>`;
+	html += gameGuideHTML(plan.key);
+	new Dialog(Object.assign({
+		id: 'armor_trim_editor_datapack_result',
+		title: t('dp_done_title'),
+		width: 640,
+		component: {template: `<div class="te_dialog_html">${html}</div>`},
+		cancelIndex: 2,
+		confirmIndex: 2,
+	}, guideButtons(plan.key))).show();
+}
+function openGameGuide() {
+	let data = D();
+	let key = data ? patternKey(data) : 'minecraft:my_trim';
+	new Dialog(Object.assign({
+		id: 'armor_trim_editor_guide',
+		title: t('guide_title'),
+		width: 640,
+		component: {template: `<div class="te_dialog_html">${gameGuideHTML(key)}</div>`},
+		cancelIndex: 2,
+		confirmIndex: 2,
+	}, guideButtons(key))).show();
 }
 
 // ============================================================================
@@ -2152,7 +2479,9 @@ function openHelpDialog() {
 		<p>${t('transparency_trims_render_as_cutout')}</p>
 		<p>${t('server_the_pattern_is_registered_by_a')}</p>`;
 	new Dialog({id: 'armor_trim_editor_help', title: t('how_armor_trims_work'), width: 700,
-		component: {template: `<div class="te_dialog_html">${html}</div>`}, singleButton: true}).show();
+		component: {template: `<div class="te_dialog_html">${html}</div>`},
+		buttons: [t('guide_menu'), t('done')], cancelIndex: 1, confirmIndex: 1,
+		onButton(index) { if (index == 0) setTimeout(openGameGuide, 50); }}).show();
 }
 
 // ============================================================================
@@ -2413,6 +2742,7 @@ function createPanels() {
 				exportDialog() { openExportDialog(); },
 				quick() { quickExport(); },
 				icon() { openIconGenerator(); },
+				datapack() { openDatapackDialog(); },
 			},
 			template: `
 				<div class="te_panel_wrap"><div class="te_panel" v-if="d">
@@ -2427,6 +2757,7 @@ function createPanels() {
 					<div class="te_row te_buttons">
 						<button @click="exportDialog()" title="${t('export_trim_to_resource_pack')}"><i class="material-icons">save_alt</i>${t('export')}</button>
 						<button @click="quick()" title="${t('export_with_the_last_settings_ctrl_alt_e')}"><i class="material-icons">bolt</i>${t('quick')}</button>
+						<button @click="datapack()" title="${t('dp_title')}"><i class="material-icons">dns</i>${t('datapack_short')}</button>
 					</div>
 					<div class="te_row te_buttons">
 						<button @click="icon()"><i class="material-icons">auto_fix_high</i>${t('icon')}</button>
@@ -2522,6 +2853,11 @@ const CSS = `
 .te_list { font-family: var(--font-code, monospace); font-size: 12px; max-height: 200px; overflow-y: auto; }
 .te_table td { padding: 3px 8px; vertical-align: top; }
 .te_dialog_html p { margin: 6px 0; }
+.te_dialog_html h3 { margin: 14px 0 6px; font-size: 16px; }
+.te_guide { margin: 4px 0 4px 22px; padding: 0; list-style: decimal outside; }
+.te_guide li { display: list-item; list-style: decimal outside; margin: 3px 0; }
+.te_code { font-family: var(--font-code, monospace); font-size: 12px; background: var(--color-back); border: 1px solid var(--color-border); padding: 6px 8px; white-space: pre-wrap; word-break: break-all; user-select: text; margin: 4px 0; }
+.te_warn_text { color: #e5b84b; }
 `;
 
 // ============================================================================
@@ -2616,6 +2952,14 @@ function registerActions() {
 			Blockbench.showMessageBox({title: t('trim_check'), message: html});
 		},
 	}));
+	actions.datapack = track(new Action('armor_trim_editor_datapack', {
+		name: t('datapack'), icon: 'dns', category: 'file', condition,
+		click: () => openDatapackDialog(),
+	}));
+	actions.guide = track(new Action('armor_trim_editor_guide', {
+		name: t('guide_menu'), icon: 'sports_esports', category: 'help',
+		click: () => openGameGuide(),
+	}));
 	actions.settings = track(new Action('armor_trim_editor_settings', {
 		name: t('trim_editor_settings_2'), icon: 'settings', category: 'settings',
 		click: () => { try { openSettingsDialog(); } catch (err) { showError(t('error'), err); } },
@@ -2627,12 +2971,12 @@ function registerActions() {
 
 	menu = new BarMenu('armor_trim_editor', [
 		'armor_trim_editor_new', 'armor_trim_editor_import', '_',
-		'armor_trim_editor_export', 'armor_trim_editor_quick_export', '_',
+		'armor_trim_editor_export', 'armor_trim_editor_quick_export', 'armor_trim_editor_datapack', '_',
 		'armor_trim_editor_icon', 'armor_trim_editor_check',
 		{name: t('clear_trim_piece'), id: 'armor_trim_editor_clear', icon: 'layers_clear', condition: () => isTrimProject(),
 			children: PIECE_ORDER.map(piece => ({name: PIECE_NAMES[piece], icon: 'clear', click: () => confirmClearPiece(piece)}))},
 		'_',
-		'armor_trim_editor_settings', 'armor_trim_editor_help',
+		'armor_trim_editor_settings', 'armor_trim_editor_guide', 'armor_trim_editor_help',
 	], {name: t('trim'), condition: () => isTrimProject()});
 	// Keep "Help" as the last menu
 	if (MenuBar.menus.help) {
@@ -2691,7 +3035,7 @@ function onPointer(event) {
 Plugin.register(PLUGIN_ID, {
 	title: 'Armor Trim Editor',
 	author: 'BbIJABNPOBATEJb',
-	description: 'Paint Minecraft: Java Edition armor trims on an exact armor model with poses, skins and a live material preview, then export them straight into a resource pack.',
+	description: 'Paint Minecraft: Java Edition armor trims on an exact armor model with poses, skins and a live material preview, then export them straight into a resource pack and a datapack.',
 	icon: 'checkroom',
 	version: PLUGIN_VERSION,
 	min_version: '5.0.0',
@@ -2874,11 +3218,9 @@ function getTranslations() {
 			in_game_press_f3_t_to_reload_resources: "In game: press F3+T to reload resources.",
 			trim_exported: "Trim exported",
 			copy_items_entry: "Copy items entry",
-			copy_trim_pattern: "Copy trim_pattern",
 			open_folder: "Open folder",
 			done: "Done",
 			copied_fill_in_the_threshold: "Copied (fill in the threshold)",
-			copied_data_trim_pattern_json: "Copied: data/<ns>/trim_pattern/<id>.json",
 			export_trim_to_resource_pack: "Export trim to resource pack",
 			trim_id: "Trim ID",
 			file_name_and_pattern_asset_id_as_in_the: "File name and pattern asset_id (as in the datapack trim_pattern).",
@@ -2989,6 +3331,40 @@ function getTranslations() {
 			trim_check: "Trim check",
 			trim_editor_settings_2: "Trim Editor settings…",
 			how_trims_work: "How trims work",
+			datapack: "Datapack…",
+			datapack_short: "Datapack",
+			dp_title: "Trim pattern datapack",
+			dp_pattern_info: "Pattern **%0**. The trim ID and namespace come from the export settings.",
+			dp_folder: "Datapack folder",
+			dp_folder_desc: "An existing datapack or an empty folder. pack.mcmeta is created only if it is missing.",
+			dp_version: "Minecraft version",
+			dp_decal_desc: "Draw the trim only over armor pixels.",
+			dp_names: "Names",
+			dp_names_desc: "One per line: language=name, e.g. en_us=Clouds. Written to assets/minecraft/lang/<language>.json of the resource pack as trim_pattern.%0.",
+			dp_zip: "Build zip",
+			dp_zip_desc: "Creates <folder name>.zip inside the datapack folder with pack.mcmeta, pack.png and data/.",
+			dp_will_be_written: "Will be written (♻ overwrite, ✎ modify, · unchanged):",
+			dp_no_folder: "No datapack folder selected.",
+			dp_not_folder: "Not a folder: ",
+			dp_rp: "resource pack: ",
+			dp_names_need_pack: "Names are skipped: set the resource pack folder in the export settings first.",
+			dp_bad_name_line: "Skipped line (expected language=name): %0",
+			dp_format_mismatch: "pack.mcmeta was kept as is, but its format is %0 while %1 uses %2.",
+			dp_done_title: "Datapack updated",
+			copy_give: "Copy /give",
+			copy_code: "Copy Paper code",
+			copied: "Copied",
+			guide_menu: "How to use a trim in game",
+			guide_title: "Using the trim in game",
+			guide_server_h: "Server",
+			guide_server_1: "Put the datapack folder or zip into <code>world/datapacks</code> of the main world.",
+			guide_server_2: "Restart the server: new trim patterns are loaded only when the world starts, <code>/reload</code> does not add them.",
+			guide_server_3: "Players need the resource pack with the textures (the <b>Export</b> button).",
+			guide_give_h: "Command",
+			guide_material: "The material only recolors the 8 palette grays; a trim painted in its own colors looks the same with any material, e.g. redstone.",
+			guide_smithing: "The pattern has no smithing template, so it can only be applied by commands or plugins.",
+			guide_plugin_h: "Bukkit / Paper plugin",
+			guide_plugin_note: "On Spigot use <code>Registry.TRIM_PATTERN.get(key)</code>. If the pattern is <code>null</code>, the datapack was not loaded.",
 		},
 		ru: {
 			quartz: "Кварц",
@@ -3038,18 +3414,18 @@ function getTranslations() {
 			leggings: "Поножи",
 			boots: "Ботинки",
 			file_access_requires_the_desktop_app: "Работа с файлами доступна только в десктопной версии Blockbench.",
-			needed_to_read_the_minecraft_jar_skins: "Нужно для чтения jar-файла Minecraft (скины, броня, палитры) и записи трима в ресурспак.",
+			needed_to_read_the_minecraft_jar_skins: "Нужно для чтения jar-файла Minecraft (скины, броня, палитры) и записи отделки в ресурспак.",
 			file_access_was_denied: "Доступ к файлам не выдан.",
-			to_reveal_the_exported_trim_in_the_file: "Чтобы открыть папку с экспортированным тримом.",
-			minecraft_client_jar_not_found_set_it_in: "Не найден jar-клиент Minecraft. Укажите его в меню «Трим → Настройки».",
+			to_reveal_the_exported_trim_in_the_file: "Чтобы открыть папку с экспортированной отделкой.",
+			minecraft_client_jar_not_found_set_it_in: "Не найден jar-клиент Minecraft. Укажите его в меню «Отделка → Настройки».",
 			armor_preview: "⚙ броня (превью)",
 			armor_leggings_preview: "⚙ броня: поножи (превью)",
 			skin_preview: "⚙ скин (превью)",
-			trim: "Трим",
+			trim: "Отделка",
 			armor: "Броня",
 			skin: "Скин",
 			item_icon: "Иконка предмета",
-			could_not_create_trim: "Не удалось создать трим",
+			could_not_create_trim: "Не удалось создать отделку",
 			player_not_found: "Игрок не найден",
 			standing: "Стойка",
 			idle: "Дыхание",
@@ -3078,32 +3454,32 @@ function getTranslations() {
 			recolor_glyph: "Перекрасить узор",
 			keep: "Оставить как есть",
 			remove_glyph: "Убрать узор",
-			the_trim_is_empty_nothing_to_sample: "Трим пустой — не из чего брать цвета.",
+			the_trim_is_empty_nothing_to_sample: "Отделка пустая — не из чего брать цвета.",
 			base: "Основа",
 			result: "Результат",
 			body_color: "Цвет таблички",
 			glyph_color: "Цвет узора",
 			glyph: "Узор",
 			contrast: "Контраст",
-			sample_colors_from_trim: "Взять цвета из трима",
+			sample_colors_from_trim: "Взять цвета из отделки",
 			the_glyph_cyan_pixels_of_vanilla: "Узор (бирюзовые пиксели ванильных шаблонов) перекрашивается отдельно. После генерации иконку можно дорисовать вручную — текстура «icon».",
 			generate_icon: "Генерация иконки",
 			icon_updated: "Иконка обновлена",
 			size_must_be_2_1_64_32_128_64: "%0: размер %1×%2 — нужно соотношение 2:1 (64×32, 128×64…)",
 			px_outside_the_uv_layout_invisible_in: "%0: %1 пикс. вне развёртки — в игре не видны",
 			remove: "Удалить",
-			semi_transparent_px_trims_render_as: "%0: %1 полупрозрачных пикс. — игра рисует тримы без смешивания (cutout): альфа < 10% пропадёт, остальное станет непрозрачным",
+			semi_transparent_px_trims_render_as: "%0: %1 полупрозрачных пикс. — игра рисует отделку без смешивания (cutout): альфа < 10% пропадёт, остальное станет непрозрачным",
 			match_game: "Сделать как в игре",
 			px_are_close_to_palette_colors_but_will: "%0: %1 пикс. почти совпадают с палитрой, но не перекрасятся материалом",
 			snap_to_palette: "Привязать к палитре",
 			px_follow_the_material_px_keep_their: "%0: %1 пикс. перекрашиваются материалом, %2 — фиксированного цвета",
-			the_trim_is_empty: "Трим пустой.",
+			the_trim_is_empty: "Отделка пустая.",
 			the_icon_is_not_square: "Иконка не квадратная.",
-			fix_trim: "Исправление трима",
-			trim_id_is_empty: "Не указан ID трима.",
-			trim_id_may_only_contain_a_z_0_9: "ID трима: только a-z, 0-9, _ . -",
-			clear_trim_piece: "Очистить часть трима",
-			erase_from_the_trim_texture_you_can_undo: "Стереть «%0» в текстуре трима? Действие можно отменить (Ctrl+Z).",
+			fix_trim: "Исправление отделки",
+			trim_id_is_empty: "Не указан ID отделки.",
+			trim_id_may_only_contain_a_z_0_9: "ID отделки: только a-z, 0-9, _ . -",
+			clear_trim_piece: "Очистить часть отделки",
+			erase_from_the_trim_texture_you_can_undo: "Стереть «%0» в текстуре отделки? Действие можно отменить (Ctrl+Z).",
 			erase: "Стереть",
 			cancel: "Отмена",
 			no_resource_pack_folder_selected: "Не выбрана папка ресурспака.",
@@ -3114,29 +3490,27 @@ function getTranslations() {
 			added_texture: "добавлена текстура ",
 			added_palette: "добавлена палитра ",
 			cannot_export: "Экспорт невозможен",
-			trim_exported_files: "Трим «%0» экспортирован (%1 файл.)",
+			trim_exported_files: "Отделка «%0» экспортирована (%1 файл.)",
 			export_failed: "Ошибка экспорта",
 			files_written: "Записано файлов",
 			atlas: "Атлас",
 			in_game_press_f3_t_to_reload_resources: "В игре: F3+T для перезагрузки ресурсов.",
-			trim_exported: "Трим экспортирован",
+			trim_exported: "Отделка экспортирована",
 			copy_items_entry: "Копировать запись для items",
-			copy_trim_pattern: "Копировать trim_pattern",
 			open_folder: "Открыть папку",
 			done: "Готово",
 			copied_fill_in_the_threshold: "Скопировано (threshold заполните сами)",
-			copied_data_trim_pattern_json: "Скопировано: data/<ns>/trim_pattern/<id>.json",
-			export_trim_to_resource_pack: "Экспорт трима в ресурспак",
-			trim_id: "ID трима",
+			export_trim_to_resource_pack: "Экспорт отделки в ресурспак",
+			trim_id: "ID отделки",
 			file_name_and_pattern_asset_id_as_in_the: "Имя файлов и asset_id паттерна (как в trim_pattern датапака).",
 			resource_pack_folder: "Папка ресурспака",
 			texture_namespace: "Namespace текстур",
-			namespace_of_the_pattern_asset_id: "Namespace из asset_id паттерна. Для ваших тримов — minecraft.",
+			namespace_of_the_pattern_asset_id: "Namespace из asset_id паттерна (обычно minecraft).",
 			atlas_assets_minecraft_atlases_armor: "**Атлас** `assets/minecraft/atlases/armor_trims.json`",
 			register_in_atlas: "Регистрировать в атласе",
 			add_missing_vanilla_palettes: "Добавить недостающие ванильные палитры",
-			e_g_copper_darker_without_it_a_copper: "Например copper_darker: без неё медный трим на медной броне будет «missing texture».",
-			template_icon_id_is_replaced_with_the: "**Иконка шаблона** (`{id}` заменяется на ID трима)",
+			e_g_copper_darker_without_it_a_copper: "Например copper_darker: без неё медная отделка на медной броне будет «missing texture».",
+			template_icon_id_is_replaced_with_the: "**Иконка шаблона** (`{id}` заменяется на ID отделки)",
 			export_icon_and_model: "Экспортировать иконку и модель",
 			icon_texture: "Текстура иконки",
 			icon_model: "Модель иконки",
@@ -3145,36 +3519,36 @@ function getTranslations() {
 			back_up_overwritten_files: "Резервные копии перезаписываемых файлов",
 			copies_go_to_blockbench_data_armor_trim: "Копии складываются в папку данных Blockbench/armor_trim_editor_backups.",
 			will_be_written_overwrite_modify: "Будут записаны (♻ — перезапись, ✎ — изменение):",
-			open_trim_from_resource_pack: "Открыть трим из ресурспака",
-			no_trims_found_in_this_pack: "В этом ресурспаке тримов не найдено.",
+			open_trim_from_resource_pack: "Открыть отделку из ресурспака",
+			no_trims_found_in_this_pack: "В этом ресурспаке отделок не найдено.",
 			pack_2: "Ресурспак",
 			icon: "Иконка",
 			search: "Поиск",
 			atlas_2: "атлас",
 			empty: "Пустой",
 			vanilla: "Ванильный: ",
-			new_armor_trim: "Новый армор трим",
+			new_armor_trim: "Новая отделка брони",
 			start_from: "Основа",
 			resolution: "Разрешение",
-			armor_under_trim: "Броня под тримом",
+			armor_under_trim: "Броня под отделкой",
 			resource_pack_export: "Ресурспак (для экспорта)",
-			could_not_load_vanilla_trim: "Не удалось загрузить ванильный трим",
+			could_not_load_vanilla_trim: "Не удалось загрузить ванильную отделку",
 			other_file: "Другой файл…",
 			trim_editor_settings: "Настройки Trim Editor",
 			minecraft_client_jar: "Jar клиента Minecraft",
 			jar_path: "Путь к jar",
-			the_jar_provides_default_skins_armor: "Из jar берутся ванильные скины, текстуры брони, шаблоны иконок и ванильные тримы. В ресурспак ничего из jar не копируется.",
+			the_jar_provides_default_skins_armor: "Из jar берутся ванильные скины, текстуры брони, шаблоны иконок и ванильные отделки. В ресурспак ничего из jar не копируется.",
 			jar_saved: "Jar сохранён",
 			helmet_0_0_at_1_0_and_outer_hat_32_0_at: "шлем (0,0) — слой 1.0 и внешний слой «hat» (32,0) — 1.5; нагрудник: торс (16,16) и руки (40,16) — 1.0; ботинки: ноги (0,16) — 0.9",
 			leggings_waist_16_16_at_0_5_legs_0_16_at: "поножи: пояс (16,16) — 0.5, ноги (0,16) — 0.4",
-			a_trim_is_drawn_on_the_same_model_as_the: "Трим рисуется поверх брони той же моделью, что и броня. Числа — насколько куб раздут относительно тела игрока (в пикселях).",
+			a_trim_is_drawn_on_the_same_model_as_the: "Отделка рисуется поверх брони той же моделью, что и броня. Числа — насколько куб раздут относительно тела игрока (в пикселях).",
 			two_layers_on_the_helmet_are_the_left: "<b>«Два слоя» на шлеме</b> — это левая (голова, 1.0) и правая (hat, 1.5) половины верхней части humanoid. Пиксели справа висят над шлемом на 0.5 пикселя.",
 			left_arm_and_leg_reuse_the_right_side: "<b>Левые рука и нога</b> используют ту же область текстуры, что и правые (зеркально) — нарисовать их по-разному нельзя.",
-			palette_only_the_8_grays_e0e0e0_000000: "<b>Палитра:</b> только 8 серых оттенков (#E0E0E0 … #000000) перекрашиваются материалом. Любой другой цвет остаётся как нарисован. Трим с материалом того же типа, что и броня (золото на золоте), берёт палитру «_darker».",
-			transparency_trims_render_as_cutout: "<b>Прозрачность:</b> тримы рисуются как cutout — альфа < 10% отбрасывается, остальное становится непрозрачным.",
-			server_the_pattern_is_registered_by_a: "<b>Сервер:</b> паттерн регистрируется датапаком (data/&lt;ns&gt;/trim_pattern/&lt;id&gt;.json, поле asset_id = &lt;ns&gt;:&lt;id&gt;). Параметр decal: true рисует трим только там, где есть броня.",
-			how_armor_trims_work: "Как устроены армор тримы",
-			trim_preview: "Трим: превью",
+			palette_only_the_8_grays_e0e0e0_000000: "<b>Палитра:</b> только 8 серых оттенков (#E0E0E0 … #000000) перекрашиваются материалом. Любой другой цвет остаётся как нарисован. Отделка из того же материала, что и броня (золото на золоте), берёт палитру «_darker».",
+			transparency_trims_render_as_cutout: "<b>Прозрачность:</b> отделка рисуется как cutout — альфа < 10% отбрасывается, остальное становится непрозрачным.",
+			server_the_pattern_is_registered_by_a: "<b>Сервер:</b> паттерн регистрируется датапаком (data/&lt;ns&gt;/trim_pattern/&lt;id&gt;.json, поле asset_id = &lt;ns&gt;:&lt;id&gt;). Параметр decal: true рисует отделку только там, где есть броня.",
+			how_armor_trims_work: "Как устроена отделка брони",
+			trim_preview: "Отделка",
 			skin_overlay: "Слой скина",
 			from_file: "из файла",
 			as_painted: "как нарисовано",
@@ -3192,7 +3566,7 @@ function getTranslations() {
 			right_half_of_the_humanoid_top_row_32_0: "Правая половина верха humanoid (32,0), висит на 0.5 px над шлемом",
 			helmet_1_5_outer: "Шлем 1.5 (внешний)",
 			leather_dye: "Цвет кожаной брони",
-			trim_material: "Материал трима",
+			trim_material: "Материал отделки",
 			as_painted_2: "Как нарисовано",
 			pink_follow_the_material_cyan_keep_their: "Розовые — перекрашиваются материалом, голубые — фиксированный цвет",
 			highlight_palette: "Подсветить палитру",
@@ -3213,29 +3587,63 @@ function getTranslations() {
 			wide_arms_2: "Широкие руки",
 			slim_arms_2: "Тонкие руки",
 			armor_uses_the_same_wide_arms_for_slim: "Броня для тонких рук в игре та же, что и для широких.",
-			trim_palette_export: "Трим: палитра и экспорт",
+			trim_palette_export: "Отделка: палитра и экспорт",
 			no_resource_pack: "ресурспак не выбран",
-			trim_palette: "Палитра трима",
+			trim_palette: "Палитра отделки",
 			top_color_to_paint_with_bottom_result: "Верх — цвет для рисования, низ — результат у выбранного материала. Остальные цвета не перекрашиваются.",
 			export: "Экспорт",
 			export_with_the_last_settings_ctrl_alt_e: "Экспорт с последними настройками (Ctrl+Alt+E)",
 			quick: "Быстро",
 			check: "Проверка",
 			no_problems_found: "Проблем не найдено.",
-			armor_trim: "Армор трим",
-			paint_minecraft_armor_trims_on_an: "Рисование армор тримов Minecraft с точной моделью брони, позами и экспортом в ресурспак",
+			armor_trim: "Отделка брони",
+			paint_minecraft_armor_trims_on_an: "Рисование отделки брони Minecraft с точной моделью брони, позами и экспортом в ресурспак",
 			exact_armor_model_from_the_game_client: "* Точная модель брони из клиента игры: шлем (1.0 + внешний слой 1.5), нагрудник, поножи, ботинки\n* Превью материалов (кварц, золото, …) прямо во время рисования\n* Позы и анимации игрока, смена скина (ванильные, файл, ник)\n* Генератор иконки шаблона и экспорт в ресурспак с регистрацией в атласе",
-			new_trim: "Новый трим",
-			new_trim_2: "Новый трим…",
-			open_trim_from_resource_pack_2: "Открыть трим из ресурспака…",
+			new_trim: "Новая отделка",
+			new_trim_2: "Новая отделка…",
+			open_trim_from_resource_pack_2: "Открыть отделку из ресурспака…",
 			error: "Ошибка",
-			export_trim_to_resource_pack_2: "Экспорт трима в ресурспак…",
-			quick_export_trim: "Быстрый экспорт трима",
+			export_trim_to_resource_pack_2: "Экспорт отделки в ресурспак…",
+			quick_export_trim: "Быстрый экспорт отделки",
 			icon_generator_2: "Генератор иконки…",
-			check_trim: "Проверить трим",
-			trim_check: "Проверка трима",
+			check_trim: "Проверить отделку",
+			trim_check: "Проверка отделки",
 			trim_editor_settings_2: "Настройки Trim Editor…",
-			how_trims_work: "Как устроены тримы",
+			how_trims_work: "Как устроена отделка",
+			datapack: "Датапак…",
+			datapack_short: "Датапак",
+			dp_title: "Датапак паттерна отделки",
+			dp_pattern_info: "Паттерн **%0**. ID отделки и namespace берутся из настроек экспорта.",
+			dp_folder: "Папка датапака",
+			dp_folder_desc: "Существующий датапак или пустая папка. pack.mcmeta создаётся, только если его нет.",
+			dp_version: "Версия Minecraft",
+			dp_decal_desc: "Рисовать отделку только поверх пикселей брони.",
+			dp_names: "Названия",
+			dp_names_desc: "По одному в строке: язык=название, например ru_ru=Облака. Записываются в assets/minecraft/lang/<язык>.json ресурспака как trim_pattern.%0.",
+			dp_zip: "Собрать zip",
+			dp_zip_desc: "Создаёт <имя папки>.zip внутри папки датапака: pack.mcmeta, pack.png и data/.",
+			dp_will_be_written: "Будут записаны (♻ — перезапись, ✎ — изменение, · — без изменений):",
+			dp_no_folder: "Не выбрана папка датапака.",
+			dp_not_folder: "Это не папка: ",
+			dp_rp: "ресурспак: ",
+			dp_names_need_pack: "Названия пропущены: сначала укажите папку ресурспака в настройках экспорта.",
+			dp_bad_name_line: "Строка пропущена (нужно язык=название): %0",
+			dp_format_mismatch: "pack.mcmeta оставлен как есть, но его формат %0, а для %1 нужен %2.",
+			dp_done_title: "Датапак обновлён",
+			copy_give: "Копировать /give",
+			copy_code: "Копировать код Paper",
+			copied: "Скопировано",
+			guide_menu: "Как выдать отделку в игре",
+			guide_title: "Как выдать отделку в игре",
+			guide_server_h: "Сервер",
+			guide_server_1: "Положите папку или zip датапака в <code>world/datapacks</code> основного мира.",
+			guide_server_2: "Перезапустите сервер: новые паттерны отделки загружаются только при запуске мира, <code>/reload</code> их не добавит.",
+			guide_server_3: "Игрокам нужен ресурспак с текстурами (кнопка <b>Экспорт</b>).",
+			guide_give_h: "Командой",
+			guide_material: "Материал перекрашивает только 8 серых оттенков палитры; отделка, нарисованная своими цветами, выглядит одинаково с любым материалом, например redstone.",
+			guide_smithing: "У паттерна нет кузнечного шаблона, поэтому наложить его можно только командой или плагином.",
+			guide_plugin_h: "Плагин Bukkit / Paper",
+			guide_plugin_note: "На Spigot используйте <code>Registry.TRIM_PATTERN.get(key)</code>. Если паттерн <code>null</code> — датапак не загрузился.",
 		},
 	};
 }
