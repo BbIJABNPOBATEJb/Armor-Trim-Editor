@@ -34,6 +34,9 @@ template icon and export everything into your resource pack in one click.
   indentation and path style, adds missing vanilla palettes such as `copper_darker`). Exporting another trim into
   the same archive adds it next to the others.
 - 📂 **Import** any trim from a resource pack folder or zip to keep editing it; HD trims (128×64 and up) are supported.
+- 🧥 **Armor icons**: draw how the trim looks on armor items in the inventory — seven icons, previewed on every
+  armor type and trim material, with generators for a quick start. Exported in the
+  [Visual Armor Trims](https://modrinth.com/resourcepack/visual-armor-trims) format, into VAT itself if your pack has it.
 - 🧬 **Datapack generator**: a datapack zip with the `trim_pattern` for Minecraft 1.21.2 – 26.2 (straight into
   `saves/<world>/datapacks` if you like), pattern names in the resource pack's lang files, plus a short guide with a
   `/give` command and Paper code.
@@ -95,10 +98,70 @@ every setting is remembered. Overwritten files (or the whole archive) are backed
 folder. After the first
 export, **Quick export** (`Ctrl + Alt + E`) repeats it without the dialog.
 
-The result dialog can copy an item model entry (for a `range_dispatch` on `custom_model_data`). Item
-definitions are never edited by the plugin.
+The result dialog can copy an item model entry (for a `range_dispatch` on `custom_model_data`); your own item
+definitions are never edited by the plugin. The only item definitions it changes are those of armor items, when
+[armor icons](#-armor-icons) are exported.
 
 <p align="center"><img src="docs/import.png" alt="Import dialog" width="50%"></p>
+
+## 🧥 Armor icons
+
+In vanilla Minecraft a trimmed helmet, chestplate, leggings or boots looks the same in the inventory whatever the
+pattern: only the color of one shared overlay follows the material. The **Icons** tab lets you draw how *this*
+trim looks on the item icons, the way the [Visual Armor Trims](https://modrinth.com/resourcepack/visual-armor-trims)
+resource pack by Thanos does it for the vanilla patterns.
+
+<p align="center"><img src="docs/armor_icons.png" alt="Painting armor icons" width="100%"></p>
+
+- 🧩 **Seven icons.** Helmet, chestplate, leggings and boots are shared by leather, chainmail, iron, gold, diamond
+  and copper armor and the netherite chestplate and leggings. The netherite helmet, turtle shell and netherite boots
+  have shapes of their own and get separate icons.
+- 🖌 **Paint icons** puts the icons flat in front of an orthographic camera, each on top of the armor item it
+  belongs to (a locked preview). The icon textures (`icon_helmet`, `icon_chestplate`, …) can also be painted in the
+  2D editor.
+- 🌈 **Colors.** Palette grays follow the trim material like the trim itself, with the darker palette where the
+  material matches the armor. **Fixed (no material)** keeps the icon exactly as drawn with every material, for
+  colorful, non-monochrome trims.
+- 🔍 **All variants** shows every armor type with every trim material and the icon as drawn.
+
+<p align="center"><img src="docs/armor_icons_variants.png" alt="Every armor type with every trim material" width="70%"></p>
+
+### Generators
+
+There is no need to draw every icon from scratch. A new trim starts with icons generated from the trim on the
+player, and **Generators** fill any of the icons from:
+
+| Source | What it does |
+|---|---|
+| From the trim on the player | fits the front view of the painted armor piece into the item silhouette |
+| Vanilla overlay | the overlay the game shows for every pattern, as a base to draw on |
+| Shape | outline, inner outline, stripes, diagonals, checkerboard, dots, bands or fill, clipped to the item silhouette, in a palette gray or any color |
+| Copy from the common helmet and boots | fits the helmet and boots drawings into the netherite helmet, turtle shell and netherite boots |
+| Clear | empties the selected icons |
+
+The result replaces the drawing or goes on top of it, and every run is one undo step.
+
+<p align="center"><img src="docs/armor_icons_generators.png" alt="Armor icon generators" width="70%"></p>
+
+### Export
+
+Armor icons are written with the normal export (Minecraft 1.21.5 or newer; empty icons are skipped, and the
+export dialog can leave them out):
+
+- If the pack already contains **Visual Armor Trims** (also inside an overlay such as `overlay_armor_trims`), the
+  trim is added to it: textures, its atlas source, models for every armor item and material (including the
+  `_fallback` palette) and new cases in the armor item definitions. Exporting again replaces only this trim's
+  cases.
+- Otherwise the plugin writes its own item definitions for the 29 armor items, built from the vanilla ones in
+  your Minecraft jar with the same layout.
+
+| File (trim `tides`) | What it is |
+|---|---|
+| `textures/trims/items/<piece>_trim/minecraft/tides.png` | helmet, chestplate, leggings and boots icons |
+| `textures/item/<item>/trim/minecraft/tides.png` | netherite helmet, netherite boots and turtle shell icons |
+| `atlases/items.json` (`blocks.json` before 1.21.11) | paletted permutations `minecraft/<material>` and `minecraft/<material>/darker` |
+| `models/item/<armor item>/minecraft/tides/minecraft/<material>.json` | one model per armor item and trim material |
+| `items/<armor item>.json` | a case for the `tides` pattern with every material |
 
 ## 🧬 Datapack
 
@@ -194,8 +257,9 @@ skin and flat-colored reference armor.
    useful for leggings, which sit under the chestplate and boots.
 3. Check the result with different materials, armor, poses and skins.
 4. Make the template icon with **Icon**.
-5. **Export**, then press `F3 + T` in game.
-6. **Datapack** once per new trim, then restart the server and give the trim with `/give` or your plugin.
+5. Draw the armor icons in the *Icons* tab, or tweak the generated ones.
+6. **Export**, then press `F3 + T` in game.
+7. **Datapack** once per new trim, then restart the server and give the trim with `/give` or your plugin.
 
 The `.bbmodel` file keeps everything — textures, preview settings and export settings.
 
