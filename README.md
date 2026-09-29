@@ -34,7 +34,8 @@ template icon and export everything into your resource pack in one click.
   indentation and path style, adds missing vanilla palettes such as `copper_darker`). Exporting another trim into
   the same archive adds it next to the others.
 - 📂 **Import** trims from a resource pack folder or zip to keep editing them — one or several at once, each in its
-  own tab, together with the template icon and armor icons; HD trims (128×64 and up) are supported.
+  own tab, together with the template icon (its path is found automatically) and armor icons; HD trims
+  (128×64 and up) are supported.
 - 🧥 **Armor icons**: draw how the trim looks on armor items in the inventory — seven icons, previewed on every
   armor type and trim material, with generators for a quick start. Exported in the
   [Visual Armor Trims](https://modrinth.com/resourcepack/visual-armor-trims) format, into VAT itself if your pack has it.
@@ -98,7 +99,8 @@ The texture namespace, icon paths (`{id}` is replaced with the trim ID) and mode
 every setting is remembered. Files whose content did not change are not rewritten (images are compared by pixels,
 JSON by content, and edited JSON keeps its indentation and line endings), so a pack kept in git shows only what you
 really changed. Overwritten files (or the whole archive) are backed up to the Blockbench data
-folder. After the first
+folder; packs inside a git repository are not backed up (git already keeps their history), and only the latest 10
+backups are kept. An empty template icon is never exported. After the first
 export, **Quick export** (`Ctrl + Alt + E`) repeats it without the dialog.
 
 The result dialog can copy an item model entry (for a `range_dispatch` on `custom_model_data`); your own item
@@ -142,14 +144,16 @@ player, and **Generators** fill any of the icons from:
 | Copy from the common helmet and boots | fits the helmet and boots drawings into the netherite helmet, turtle shell and netherite boots |
 | Clear | empties the selected icons |
 
-The result replaces the drawing or goes on top of it, and every run is one undo step.
+The result replaces the drawing or goes on top of it, and every run is one undo step. When a generator gives an
+empty icon (say, the trim has nothing on the front of the helmet), the icon already drawn is kept.
 
 <p align="center"><img src="docs/armor_icons_generators.png" alt="Armor icon generators" width="70%"></p>
 
 ### Export
 
-Armor icons are written with the normal export (Minecraft 1.21.5 or newer; empty icons are skipped, and the
-export dialog can leave them out):
+Armor icons are written with the normal export (Minecraft 1.21.5 or newer; the export dialog can leave them out).
+Empty icons are skipped, and the pack keeps whatever it already has for those items, so a generator result or an
+unfinished icon never removes existing ones:
 
 - If the pack already contains **Visual Armor Trims** (also inside an overlay such as `overlay_armor_trims`), the
   trim is added to it: textures, its atlas source, models for every armor item and material (including the
